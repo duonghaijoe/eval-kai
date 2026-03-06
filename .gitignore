@@ -1,0 +1,14 @@
+.env
+.DS_Store
+*.db-shm
+*.db-wal
+__pycache__/
+*.pyc
+results/*.json
+results/*.html
+sessions/
+matches/
+.venv/
+web/kai_tests.db
+web/frontend/node_modules/
+web/frontend/dist/

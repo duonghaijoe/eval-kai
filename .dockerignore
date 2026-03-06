@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+sessions/
+results/*.json
+web/kai_tests.db
+web/frontend/node_modules/
+web/frontend/dist/
+.claude/
+.git/

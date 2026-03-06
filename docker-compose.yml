@@ -1,0 +1,22 @@
+services:
+  kai-tester:
+    build: .
+    ports:
+      - "3006:8000"
+    volumes:
+      # Persist Claude auth (login once, reuse across restarts)
+      - claude-auth:/root/.claude
+      # Persist SQLite database only
+      - kai-data:/app/web/data
+      # Mount .env for Kai/TestOps credentials
+      - ./.env:/app/.env:ro
+    environment:
+      - MAX_CONCURRENT_SESSIONS=10
+      - MAX_CONCURRENT_MATCHES=3
+    restart: unless-stopped
+
+volumes:
+  claude-auth:
+    name: kai-claude-auth
+  kai-data:
+    name: kai-test-data

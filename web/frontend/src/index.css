@@ -1,0 +1,92 @@
+:root {
+  /* Katalon Brand Palette */
+  --katalon-teal: #00897B;
+  --katalon-teal-dark: #00695C;
+  --katalon-teal-light: #4DB6AC;
+  --katalon-navy: #1A2B3C;
+  --katalon-dark: #0F1923;
+
+  --bg-primary: #f5f7fa;
+  --bg-secondary: var(--katalon-navy);
+  --bg-card: #ffffff;
+  --bg-hover: #eef1f6;
+  --text-primary: #1A2B3C;
+  --text-secondary: #4a5568;
+  --text-muted: #8e99a8;
+  --accent: var(--katalon-teal);
+  --accent-hover: var(--katalon-teal-dark);
+  --accent-light: rgba(0, 137, 123, 0.08);
+  --green: #16a34a;
+  --red: #dc2626;
+  --yellow: #ca8a04;
+  --orange: #ea580c;
+  --blue: #2563eb;
+  --border: #e2e8f0;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+#root {
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+
+button {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 0.5em 1em;
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-family: inherit;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+button:hover { border-color: var(--accent); background: var(--bg-hover); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+button.primary:hover { background: var(--accent-hover); }
+button.danger { border-color: var(--red); color: var(--red); }
+button.danger:hover { background: var(--red); color: white; }
+
+input, select, textarea {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 0.5em 0.75em;
+  font-size: 0.875rem;
+  font-family: inherit;
+  width: 100%;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 137, 123, 0.12);
+}
+
+label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+  font-weight: 500;
+}
