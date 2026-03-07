@@ -498,6 +498,9 @@ class KaiClient:
         try:
             resp = self._send_run(payload, analytics)
             response.status = resp.get("status", "unknown")
+            # TTFT: time until Kai accepted the request and started working
+            analytics.first_byte = time.time()
+            analytics.ttfb_ms = (analytics.first_byte - analytics.request_start) * 1000
         except Exception as e:
             analytics.response_end = time.time()
             analytics.total_ms = (analytics.response_end - analytics.request_start) * 1000
@@ -519,11 +522,6 @@ class KaiClient:
 
         if response.status == "working":
             self._poll_for_completion(thread_id, connect_payload, response, analytics)
-
-        # If TTFT wasn't set during polling (e.g. immediate response), set it now
-        if not analytics.first_byte:
-            analytics.first_byte = time.time()
-            analytics.ttfb_ms = (analytics.first_byte - analytics.request_start) * 1000
 
         analytics.response_end = time.time()
         analytics.total_ms = (analytics.response_end - analytics.request_start) * 1000
@@ -554,7 +552,13 @@ class KaiClient:
     def _poll_for_completion(
         self, thread_id: str, payload: dict, response: ChatResponse, analytics: Analytics
     ):
-        """Poll via /connect until agent completes, capturing response text."""
+        """Poll via /connect until agent completes, capturing response text.
+
+        TTFT measurement: Since Kai uses a poll-based protocol (not streaming),
+        we track two timestamps:
+        - TTFT: first poll that returns new history events (Kai started producing content)
+        - Total: final poll when status is input-required (Kai finished)
+        """
         poll_start = time.time()
         deadline = poll_start + self.poll_timeout
 
@@ -570,16 +574,9 @@ class KaiClient:
                 logger.debug(f"Poll #{analytics.poll_count}: status={status} events={len(history)}")
 
                 if status in (ConversationStatus.INPUT_REQUIRED, "input-required"):
-                    # Agent finished — TTFT = time to first actual content
-                    if not analytics.first_byte:
-                        analytics.first_byte = time.time()
-                        analytics.ttfb_ms = (analytics.first_byte - analytics.request_start) * 1000
                     self._extract_response(history, response, analytics)
                     break
                 elif status in (ConversationStatus.ERROR, "error"):
-                    if not analytics.first_byte:
-                        analytics.first_byte = time.time()
-                        analytics.ttfb_ms = (analytics.first_byte - analytics.request_start) * 1000
                     analytics.error_message = "Agent returned error status"
                     self._extract_response(history, response, analytics)
                     break
@@ -628,22 +625,24 @@ class KaiClient:
                                 timestamp=time.time(),
                             ))
 
-        # Pass 2: Extract final assistant text (last assistant message with text)
-        for msg in reversed(history):
+        # Pass 2: Concatenate ALL assistant text from all assistant messages (in order)
+        all_text_parts = []
+        for msg in history:
             if msg.get("role") == "assistant":
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    response.text = content
+                    if content.strip():
+                        all_text_parts.append(content)
                 elif isinstance(content, list):
-                    text_parts = []
                     for part in content:
                         if isinstance(part, str):
-                            text_parts.append(part)
+                            if part.strip():
+                                all_text_parts.append(part)
                         elif isinstance(part, dict) and part.get("type") == "text":
-                            text_parts.append(part.get("text", ""))
-                    response.text = "\n".join(text_parts)
-                if response.text:
-                    break
+                            text = part.get("text", "")
+                            if text.strip():
+                                all_text_parts.append(text)
+        response.text = "\n".join(all_text_parts)
 
         # Also store tool_calls on the response object
         response.tool_calls = analytics.tool_calls

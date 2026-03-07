@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { List, Plus, Trash2, Clock, Timer, Zap, Award, Activity, ExternalLink, Trophy, RotateCcw, Search, Filter, CheckSquare, Square, X } from 'lucide-react'
-import { listSessions, deleteSession, startSession, bulkDeleteSessions } from '../api'
+import { listSessions, deleteSession, startSession, bulkDeleteSessions, formatDt } from '../api'
 import { useAdmin } from '../App'
 
 function formatMs(ms) {
@@ -233,7 +233,7 @@ export default function SessionList() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                     <Clock size={10} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} />
-                    {s.created_at ? new Date(s.created_at).toLocaleString() : '-'}
+                    {formatDt(s.created_at)}
                   </span>
                   {s.status !== 'running' && (
                     <>

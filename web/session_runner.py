@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from kai_client import KaiClient
 from kai_actor import SCENARIOS
 from actor_brain import ActorBrain
-from rubric import score_latency
+from rubric import score_latency, load_rubric
 from env_config import get_active_env
 import database as db
 
@@ -272,15 +272,45 @@ async def _execute_session(
     session_eval = {}
     if brain and turns:
         session_eval = await brain.evaluate_session(goal or "", turns, actor_mode)
+
+        # Compute overall_score from per-exchange dimensions using rubric weights
+        rubric = load_rubric()
+        turn_dims = rubric.get("turn_dimensions", {})
+        weights = {
+            "relevance": turn_dims.get("relevance", {}).get("weight", 1),
+            "accuracy": turn_dims.get("accuracy", {}).get("weight", 1),
+            "helpfulness": turn_dims.get("helpfulness", {}).get("weight", 1),
+            "tool_usage": turn_dims.get("tool_usage", {}).get("weight", 1),
+            "latency": turn_dims.get("latency", {}).get("weight", 1),
+        }
+
+        # Average each dimension across all turns
+        def avg_dim(key):
+            vals = [t.get(key, 0) for t in turns if t.get(key)]
+            return sum(vals) / len(vals) if vals else 3
+
+        avgs = {
+            "relevance": avg_dim("eval_relevance"),
+            "accuracy": avg_dim("eval_accuracy"),
+            "helpfulness": avg_dim("eval_helpfulness"),
+            "tool_usage": avg_dim("eval_tool_usage"),
+            "latency": avg_dim("eval_latency"),
+        }
+
+        total_weight = sum(weights.values())
+        overall = sum(avgs[k] * weights[k] for k in weights) / total_weight
+        overall = round(overall, 1)
+
         db.save_evaluation(
             session_id=session_id,
             goal_achievement=session_eval.get("goal_achievement", 3),
             context_retention=session_eval.get("context_retention", 3),
             error_handling=session_eval.get("error_handling", 3),
             response_quality=session_eval.get("response_quality", 3),
-            overall_score=session_eval.get("overall_score", 3.0),
+            overall_score=overall,
             summary=session_eval.get("summary", ""),
             issues=session_eval.get("issues", []),
+            rubric_weights=weights,
         )
 
     db.update_session(

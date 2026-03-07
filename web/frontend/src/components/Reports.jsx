@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart3, TrendingUp, Clock, CheckCircle, Target, Brain, Shield, Star, Activity, ExternalLink, Timer, Zap } from 'lucide-react'
-import { getReports } from '../api'
+import { getReports, formatDt } from '../api'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts'
 
 const RING_COLORS = {
@@ -428,7 +428,7 @@ export default function Reports() {
                       }
                     </td>
                     <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      {s.created_at ? new Date(s.created_at).toLocaleString() : '-'}
+                      {formatDt(s.created_at)}
                     </td>
                   </tr>
                 ))}

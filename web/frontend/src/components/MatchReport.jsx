@@ -1,7 +1,16 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, CheckCircle, XCircle, Clock, Layers, BarChart3, AlertTriangle, ExternalLink, Award, Trophy, Target, Brain, Shield, Star, RotateCcw } from 'lucide-react'
+import { ArrowLeft, CheckCircle, XCircle, Clock, Layers, BarChart3, AlertTriangle, ExternalLink, Award, Trophy, Target, Brain, Shield, Star, Timer, RotateCcw } from 'lucide-react'
 import { getMatchReport, createMatch } from '../api'
+
+function scoreLatencyFromMs(totalMs) {
+  if (totalMs == null) return null
+  if (totalMs <= 15000) return 5
+  if (totalMs <= 30000) return 4
+  if (totalMs <= 60000) return 3
+  if (totalMs <= 120000) return 2
+  return 1
+}
 
 function ScoreDisplay({ value, max = 5 }) {
   if (value == null) return <span style={{ color: 'var(--text-muted)' }}>-</span>
@@ -250,6 +259,7 @@ export default function MatchReport() {
                   <span className="eval-pill"><Brain size={10} /> Context: <ScoreDisplay value={s.evaluation.context_retention} /></span>
                   <span className="eval-pill"><Shield size={10} /> Defense: <ScoreDisplay value={s.evaluation.error_handling} /></span>
                   <span className="eval-pill"><Star size={10} /> Quality: <ScoreDisplay value={s.evaluation.response_quality} /></span>
+                  <span className="eval-pill"><Timer size={10} /> Latency: <ScoreDisplay value={scoreLatencyFromMs(s.avg_total)} /></span>
                 </div>
                 {s.evaluation.summary && (
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>

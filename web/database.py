@@ -133,6 +133,11 @@ def init_db():
             conn.execute("SELECT env_info FROM sessions LIMIT 1")
         except sqlite3.OperationalError:
             conn.execute("ALTER TABLE sessions ADD COLUMN env_info TEXT DEFAULT '{}'")
+        # Add rubric_weights snapshot to evaluations
+        try:
+            conn.execute("SELECT rubric_weights FROM evaluations LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE evaluations ADD COLUMN rubric_weights TEXT DEFAULT '{}'")
 
 
 # ── Matches ──────────────────────────────────────────────────────
@@ -375,15 +380,16 @@ def _parse_turn(row) -> dict:
 
 def save_evaluation(session_id: str, goal_achievement: int, context_retention: int,
                     error_handling: int, response_quality: int, overall_score: float,
-                    summary: str = "", issues: list = None):
+                    summary: str = "", issues: list = None, rubric_weights: dict = None):
     with get_conn() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO evaluations
                (session_id, goal_achievement, context_retention, error_handling,
-                response_quality, overall_score, summary, issues)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                response_quality, overall_score, summary, issues, rubric_weights)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (session_id, goal_achievement, context_retention, error_handling,
-             response_quality, overall_score, summary, json.dumps(issues or [])),
+             response_quality, overall_score, summary, json.dumps(issues or []),
+             json.dumps(rubric_weights or {})),
         )
 
 
@@ -397,6 +403,11 @@ def get_evaluation(session_id: str) -> Optional[dict]:
         d = dict(row)
         if isinstance(d.get("issues"), str):
             d["issues"] = json.loads(d["issues"])
+        if isinstance(d.get("rubric_weights"), str):
+            try:
+                d["rubric_weights"] = json.loads(d["rubric_weights"])
+            except (json.JSONDecodeError, TypeError):
+                d["rubric_weights"] = {}
         return d
 
 
@@ -565,7 +576,7 @@ def get_report_data(ring: str = None) -> dict:
         }
 
 
-def get_match_trends(ring: str = None) -> dict:
+def get_match_trends(ring: str = None, pass_threshold: float = 3.0) -> dict:
     """Get match-level trends over time for regression analysis.
 
     Returns per-match, per-category aggregated metrics ordered by time.
@@ -654,12 +665,12 @@ def get_match_trends(ring: str = None) -> dict:
             cats = match_cat_data.get(m["id"], {})
             for cat, sessions_list in cats.items():
                 all_categories.add(cat)
-                completed = [s for s in sessions_list if s["status"] == "completed"]
                 scored = [s for s in sessions_list if s["overall_score"] is not None]
+                passed = [s for s in scored if s["overall_score"] >= pass_threshold]
                 entry["categories"][cat] = {
                     "total": len(sessions_list),
-                    "passed": len(completed),
-                    "pass_rate": len(completed) / len(sessions_list) if sessions_list else 0,
+                    "passed": len(passed),
+                    "pass_rate": len(passed) / len(sessions_list) if sessions_list else 0,
                     "avg_score": round(sum(s["overall_score"] for s in scored) / len(scored), 2) if scored else None,
                     "avg_goal": round(sum(s["goal_achievement"] for s in scored if s["goal_achievement"]) / max(len([s for s in scored if s["goal_achievement"]]), 1), 2) if scored else None,
                     "avg_context": round(sum(s["context_retention"] for s in scored if s["context_retention"]) / max(len([s for s in scored if s["context_retention"]]), 1), 2) if scored else None,

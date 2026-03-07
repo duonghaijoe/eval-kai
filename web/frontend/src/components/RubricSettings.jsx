@@ -251,6 +251,27 @@ export default function RubricSettings() {
         ))}
       </div>
 
+      {/* Pass Threshold */}
+      <div className="card">
+        <h3><CheckCircle size={13} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />Pass Threshold</h3>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+          Minimum overall score (1-5) for a round to be considered "passed". Rounds below this score are marked as failed.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <input
+            type="number"
+            min={1} max={5} step={0.1}
+            value={rubric.pass_threshold ?? 3.0}
+            onChange={e => setRubric(r => ({ ...r, pass_threshold: parseFloat(e.target.value) || 3.0 }))}
+            disabled={!isAdmin}
+            style={{ width: '5rem' }}
+          />
+          <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+            / 5 — rounds scoring below {rubric.pass_threshold ?? 3.0} will show as <span style={{ color: 'var(--red)', fontWeight: 600 }}>failed</span>
+          </span>
+        </div>
+      </div>
+
       {/* Session-level dimensions */}
       <div className="card">
         <h3><Target size={13} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />Round-Level Dimensions</h3>

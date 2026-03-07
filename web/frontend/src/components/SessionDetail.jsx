@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Timer, Zap, Activity, Award, MessageSquare, BarChart3, AlertTriangle, Terminal, User, Bot, Clock, RotateCcw } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getSession, connectWebSocket, startSession } from '../api'
+import { getSession, connectWebSocket, startSession, formatTime } from '../api'
 
 function ScoreDisplay({ value, max = 5 }) {
   if (value == null) return <span style={{ color: 'var(--text-muted)' }}>-</span>
@@ -250,7 +250,7 @@ export default function SessionDetail() {
                   <User size={10} /> Exchange {t.turn_number} — Joe
                   {t.timestamp && (
                     <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 400, display: 'inline-flex', alignItems: 'center', gap: '0.15rem' }}>
-                      <Clock size={8} /> {new Date(t.timestamp).toLocaleTimeString()}
+                      <Clock size={8} /> {formatTime(t.timestamp)}
                     </span>
                   )}
                 </div>
@@ -334,7 +334,7 @@ export default function SessionDetail() {
       {evaluation && (
         <div className="card">
           <h3><Award size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Scorecard</h3>
-          <div className="grid grid-4" style={{ marginBottom: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
             <div>
               <div className="stat-label">Goal Achievement</div>
               <ScoreDisplay value={evaluation.goal_achievement} />
@@ -350,6 +350,14 @@ export default function SessionDetail() {
             <div>
               <div className="stat-label">Response Quality</div>
               <ScoreDisplay value={evaluation.response_quality} />
+            </div>
+            <div>
+              <div className="stat-label">Latency</div>
+              <ScoreDisplay value={
+                allTurns.length > 0
+                  ? +(allTurns.filter(t => t.eval_latency).reduce((s, t) => s + t.eval_latency, 0) / allTurns.filter(t => t.eval_latency).length).toFixed(1)
+                  : null
+              } />
             </div>
           </div>
           {evaluation.summary && (
@@ -384,11 +392,11 @@ export default function SessionDetail() {
                 <th>TTFT</th>
                 <th>Total</th>
                 <th>Polls</th>
-                <th>Rel</th>
-                <th>Acc</th>
-                <th>Help</th>
-                <th>Tool</th>
-                <th>Latency</th>
+                <th>Rel {evaluation?.rubric_weights?.relevance != null && <span style={{ fontWeight: 400, fontSize: '0.6rem', color: 'var(--text-muted)' }}>×{evaluation.rubric_weights.relevance}</span>}</th>
+                <th>Acc {evaluation?.rubric_weights?.accuracy != null && <span style={{ fontWeight: 400, fontSize: '0.6rem', color: 'var(--text-muted)' }}>×{evaluation.rubric_weights.accuracy}</span>}</th>
+                <th>Help {evaluation?.rubric_weights?.helpfulness != null && <span style={{ fontWeight: 400, fontSize: '0.6rem', color: 'var(--text-muted)' }}>×{evaluation.rubric_weights.helpfulness}</span>}</th>
+                <th>Tool {evaluation?.rubric_weights?.tool_usage != null && <span style={{ fontWeight: 400, fontSize: '0.6rem', color: 'var(--text-muted)' }}>×{evaluation.rubric_weights.tool_usage}</span>}</th>
+                <th>Latency {evaluation?.rubric_weights?.latency != null && <span style={{ fontWeight: 400, fontSize: '0.6rem', color: 'var(--text-muted)' }}>×{evaluation.rubric_weights.latency}</span>}</th>
                 <th>Error</th>
               </tr>
             </thead>

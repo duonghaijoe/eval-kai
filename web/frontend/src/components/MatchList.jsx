@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Trophy, Plus, Trash2, Clock, Timer, Zap, Award, Layers, CheckCircle, XCircle, RotateCcw, Search, X, CheckSquare, Square } from 'lucide-react'
-import { listMatches, deleteMatch, createMatch, bulkDeleteMatches } from '../api'
+import { listMatches, deleteMatch, createMatch, bulkDeleteMatches, formatDt } from '../api'
 import { useAdmin } from '../App'
 
 function formatMs(ms) {
@@ -219,7 +219,7 @@ export default function MatchList() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                     <Clock size={10} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} />
-                    {m.created_at ? new Date(m.created_at).toLocaleString() : '-'}
+                    {formatDt(m.created_at)}
                   </span>
                   {m.status !== 'running' && (
                     <>

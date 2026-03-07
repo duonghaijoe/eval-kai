@@ -50,14 +50,14 @@ DEFAULT_RUBRIC = {
         },
         "tool_usage": {
             "name": "Tool Usage",
-            "description": "Did Kai appropriately use tools/capabilities?",
+            "description": "Did Kai appropriately use tools/capabilities? Score 5 if no tools were needed and none were used.",
             "weight": 1.0,
             "scores": {
                 "1": "Failed to use necessary tools or used them incorrectly",
-                "2": "Poor tool selection or execution",
-                "3": "Adequate tool usage or N/A (no tools needed)",
-                "4": "Good tool selection and execution",
-                "5": "Optimal tool usage, creative and efficient",
+                "2": "Poor tool selection or execution, missed obvious tool need",
+                "3": "Used tools but with suboptimal selection or execution",
+                "4": "Good tool selection and execution with minor inefficiencies",
+                "5": "Optimal tool usage — or no tools needed and none were used",
             },
         },
         "latency": {
@@ -66,15 +66,15 @@ DEFAULT_RUBRIC = {
             "weight": 1.0,
             "auto_score": True,
             "thresholds": {
-                "ttfb_ms": {"5": 2000, "4": 4000, "3": 8000, "2": 15000, "1": 999999},
-                "total_ms": {"5": 5000, "4": 10000, "3": 20000, "2": 40000, "1": 999999},
+                "ttfb_ms": {"5": 3000, "4": 6000, "3": 10000, "2": 20000, "1": 999999},
+                "total_ms": {"5": 15000, "4": 30000, "3": 60000, "2": 120000, "1": 999999},
             },
             "scores": {
-                "1": "Very slow (TTFT >15s or total >40s)",
-                "2": "Slow (TTFT >8s or total >20s)",
-                "3": "Acceptable (TTFT >4s or total >10s)",
-                "4": "Fast (TTFT >2s or total >5s)",
-                "5": "Excellent (TTFT <2s and total <5s)",
+                "1": "Very slow (TTFT >20s or total >120s)",
+                "2": "Slow (TTFT >10s or total >60s)",
+                "3": "Acceptable (TTFT >6s or total >30s)",
+                "4": "Fast (TTFT >3s or total >15s)",
+                "5": "Excellent (TTFT <3s and total <15s)",
             },
         },
     },
@@ -128,6 +128,7 @@ DEFAULT_RUBRIC = {
             },
         },
     },
+    "pass_threshold": 3.0,  # Minimum overall score to pass (1-5)
 }
 
 

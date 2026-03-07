@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity, Bot } from 'lucide-react'
-import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth } from '../api'
+import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth, getConfig, updateConfig } from '../api'
 import { useAdmin } from '../App'
 
 function HealthResult({ health }) {
@@ -350,9 +350,19 @@ export default function EnvironmentSettings() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [newEnvKey, setNewEnvKey] = useState('')
+  const [maxSessions, setMaxSessions] = useState(10)
+  const [maxMatches, setMaxMatches] = useState(3)
+  const [maxRoundsPerMatch, setMaxRoundsPerMatch] = useState(3)
+  const [savingConcurrency, setSavingConcurrency] = useState(false)
+  const [concurrencySaved, setConcurrencySaved] = useState(false)
 
   useEffect(() => {
     getEnvConfig().then(d => { setConfig(d); setLoading(false) }).catch(() => setLoading(false))
+    getConfig().then(d => {
+      setMaxSessions(d.max_concurrent || 10)
+      setMaxMatches(d.max_concurrent_matches || 3)
+      setMaxRoundsPerMatch(d.max_rounds_per_match || 3)
+    }).catch(() => {})
   }, [])
 
   const isAdmin = !!admin
@@ -464,6 +474,81 @@ export default function EnvironmentSettings() {
       </div>
 
       <JoeBotCard />
+
+      {/* Concurrency Settings */}
+      <div className="card">
+        <h3><Activity size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Concurrency</h3>
+        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+          Control how many rounds and matches can run simultaneously. Lower values are safer for single-account testing.
+        </p>
+        <div className="form-row">
+          <div>
+            <label>Max Concurrent Rounds (Global)</label>
+            <input
+              type="number" min={1} max={50}
+              value={maxSessions}
+              onChange={e => setMaxSessions(+e.target.value)}
+              disabled={!isAdmin}
+            />
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+              Total rounds running across all matches
+            </div>
+          </div>
+          <div>
+            <label>Max Concurrent Matches</label>
+            <input
+              type="number" min={1} max={10}
+              value={maxMatches}
+              onChange={e => setMaxMatches(+e.target.value)}
+              disabled={!isAdmin}
+            />
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+              How many matches can run at the same time
+            </div>
+          </div>
+          <div>
+            <label>Max Rounds per Match</label>
+            <input
+              type="number" min={1} max={20}
+              value={maxRoundsPerMatch}
+              onChange={e => setMaxRoundsPerMatch(+e.target.value)}
+              disabled={!isAdmin}
+            />
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+              Parallel rounds within a single match (set 1 for sequential)
+            </div>
+          </div>
+        </div>
+        {isAdmin && (
+          <div style={{ marginTop: '0.75rem' }}>
+            <button
+              className="primary"
+              disabled={savingConcurrency}
+              onClick={async () => {
+                setSavingConcurrency(true)
+                setConcurrencySaved(false)
+                try {
+                  await updateConfig({ max_concurrent: maxSessions, max_concurrent_matches: maxMatches, max_rounds_per_match: maxRoundsPerMatch })
+                  setConcurrencySaved(true)
+                  setTimeout(() => setConcurrencySaved(false), 2000)
+                } catch (e) {
+                  if (e.message.includes('login required') || e.message.includes('expired')) setAdmin(null)
+                  alert('Failed: ' + e.message)
+                } finally {
+                  setSavingConcurrency(false)
+                }
+              }}
+            >
+              {savingConcurrency
+                ? <><span className="spinner" style={{ width: 12, height: 12 }} /> Saving...</>
+                : concurrencySaved
+                  ? <><CheckCircle size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} /> Applied</>
+                  : <><Save size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} /> Apply</>
+              }
+            </button>
+          </div>
+        )}
+      </div>
 
       <div className="card">
         <h3><Globe size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Test Environments</h3>

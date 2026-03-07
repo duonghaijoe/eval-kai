@@ -59,6 +59,25 @@ export default function SessionLauncher() {
     }
   }
 
+  const handleQuickTest = async () => {
+    setError(null)
+    setLoading(true)
+    try {
+      const res = await startSession({
+        actorMode: 'explore',
+        goal: 'Quick greeting test: say hello and verify Kai responds properly',
+        maxTurns: 1,
+        maxTimeS: 120,
+        evalModel,
+      })
+      navigate(`/sessions/${res.session_id}`)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleRunAll = async () => {
     setError(null)
     setLoading(true)
@@ -82,6 +101,45 @@ export default function SessionLauncher() {
     <div>
       <div className="page-header">
         <h2><Zap size={20} /> New Match</h2>
+      </div>
+
+      {/* Quick Test — Spotlight */}
+      <div className="card" style={{
+        background: 'linear-gradient(135deg, var(--katalon-teal), #00695c)',
+        color: 'white',
+        padding: '1.5rem 2rem',
+        borderRadius: 'var(--radius)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '1.5rem',
+      }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+            <Zap size={22} />
+            <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'white' }}>Quick Test</h3>
+          </div>
+          <p style={{ margin: 0, fontSize: '0.85rem', opacity: 0.9 }}>
+            Send a greeting to Kai and get a scored report in seconds. Perfect for a quick health check.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleQuickTest}
+          disabled={loading}
+          style={{
+            background: 'rgba(255,255,255,0.2)',
+            borderColor: 'rgba(255,255,255,0.4)',
+            color: 'white',
+            whiteSpace: 'nowrap',
+            padding: '0.65rem 1.5rem',
+            fontSize: '0.95rem',
+            fontWeight: 600,
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          {loading ? <><span className="spinner" /> Starting...</> : <><Zap size={16} style={{ verticalAlign: 'middle', marginRight: '0.4rem' }} />Run Quick Test</>}
+        </button>
       </div>
 
       <form onSubmit={handleSubmit}>

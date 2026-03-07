@@ -182,10 +182,12 @@ Return ONLY the messages, one per line, numbered like:
 Test Goal: {goal}
 Turn: {turn_number}
 User message: {user_message}
-Kai response: {assistant_response[:3000]}
+Kai response: {assistant_response}
 
 Score each dimension 1-5 using this rubric:
 {rubric_text}
+
+IMPORTANT: For tool_usage, if the question did not require any tool calls and Kai did not use any, score 5 (optimal — no tools needed, none used). Only score lower if tools WERE needed but not used, or used incorrectly.
 
 Return ONLY valid JSON, no markdown:
 {{"relevance": N, "accuracy": N, "helpfulness": N, "tool_usage": N, "notes": "brief observation"}}"""
@@ -213,7 +215,7 @@ Return ONLY valid JSON, no markdown:
             transcript += f"\n[Turn {t.get('turn_number', '?')}]\n"
             transcript += f"User: {t.get('user_message', '')}\n"
             resp = t.get('assistant_response', '') or ''
-            transcript += f"Kai: {resp[:1000]}\n"
+            transcript += f"Kai: {resp}\n"
             if t.get('error'):
                 transcript += f"Error: {t['error']}\n"
             # Include latency data
@@ -240,7 +242,7 @@ Total Turns: {len(turns)}
 {latency_summary}
 
 Full Transcript:
-{transcript[:8000]}
+{transcript}
 
 Provide a comprehensive evaluation. Score each dimension 1-5 using this rubric:
 {rubric_text}

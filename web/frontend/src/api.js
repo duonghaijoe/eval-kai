@@ -1,5 +1,27 @@
 const BASE = '';
 
+// ── Date formatting (UTC+7) ─────────────────────────────────────
+
+const TZ = 'Asia/Bangkok';
+
+export function formatDt(dateStr) {
+  if (!dateStr) return '-';
+  const d = dateStr.endsWith('Z') ? new Date(dateStr) : new Date(dateStr + 'Z');
+  return d.toLocaleString('en-GB', { timeZone: TZ, day: 'numeric', month: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
+}
+
+export function formatDate(dateStr) {
+  if (!dateStr) return '-';
+  const d = dateStr.endsWith('Z') ? new Date(dateStr) : new Date(dateStr + 'Z');
+  return d.toLocaleDateString('en-GB', { timeZone: TZ, day: 'numeric', month: 'numeric', year: 'numeric' });
+}
+
+export function formatTime(dateStr) {
+  if (!dateStr) return '-';
+  const d = dateStr.endsWith('Z') ? new Date(dateStr) : new Date(dateStr + 'Z');
+  return d.toLocaleTimeString('en-GB', { timeZone: TZ, hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
+}
+
 // ── Auth ─────────────────────────────────────────────────────────
 
 const TOKEN_KEY = 'kai_admin_token';
@@ -268,6 +290,13 @@ export async function getMatchTrends(ring = null) {
   return res.json();
 }
 
+export async function analyzeMatchTrends(ring = null) {
+  const params = ring ? `?ring=${ring}` : '';
+  const res = await fetch(`${BASE}/api/match-trends/analyze${params}`, { method: 'POST' });
+  if (!res.ok) throw new Error('Analysis failed');
+  return res.json();
+}
+
 export async function checkHealth() {
   const res = await fetch(`${BASE}/api/health`);
   return res.json();
@@ -286,9 +315,14 @@ export async function getConfig() {
 export async function updateConfig(config) {
   const res = await fetch(`${BASE}/api/config`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(config),
   });
+  if (res.status === 401) throw new Error('Admin login required');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to update config');
+  }
   return res.json();
 }
 

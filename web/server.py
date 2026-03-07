@@ -40,6 +40,9 @@ app = FastAPI(title="Kai Test Dashboard", version="1.0.0")
 MAX_CONCURRENT_MATCHES = int(os.environ.get("MAX_CONCURRENT_MATCHES", "3"))
 _match_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MATCHES)
 
+# Max concurrent rounds per match (limits parallelism within a single match)
+MAX_ROUNDS_PER_MATCH = int(os.environ.get("MAX_ROUNDS_PER_MATCH", "3"))
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -172,6 +175,8 @@ class CreateMatchRequest(BaseModel):
 
 class ConfigUpdate(BaseModel):
     max_concurrent: Optional[int] = None
+    max_concurrent_matches: Optional[int] = None
+    max_rounds_per_match: Optional[int] = None
     eval_model: Optional[str] = None
 
 
@@ -316,40 +321,42 @@ async def create_match(req: CreateMatchRequest):
                 "type": "match_started", "match_id": match_id,
             })
 
+            # Per-match semaphore limits how many rounds run in parallel within this match
+            match_sem = asyncio.Semaphore(MAX_ROUNDS_PER_MATCH)
+
             async def run_one(sid, sc):
-                # Closure captures sid/sc correctly
-                async def on_turn(s, data):
-                    data["match_id"] = match_id
-                    await manager.broadcast(s, data)
-                    await manager.broadcast(match_id, data)
+                async with match_sem:
+                    async def on_turn(s, data):
+                        data["match_id"] = match_id
+                        await manager.broadcast(s, data)
+                        await manager.broadcast(match_id, data)
 
-                async def on_complete(s, data):
-                    data["match_id"] = match_id
-                    await manager.broadcast(s, data)
-                    await manager.broadcast(match_id, data)
+                    async def on_complete(s, data):
+                        data["match_id"] = match_id
+                        await manager.broadcast(s, data)
+                        await manager.broadcast(match_id, data)
 
-                async def on_error(s, error):
-                    await manager.broadcast(s, {"type": "error", "session_id": s, "error": error})
-                    await manager.broadcast(match_id, {"type": "session_error", "session_id": s, "error": error})
+                    async def on_error(s, error):
+                        await manager.broadcast(s, {"type": "error", "session_id": s, "error": error})
+                        await manager.broadcast(match_id, {"type": "session_error", "session_id": s, "error": error})
 
-                try:
-                    await run_session(
-                        session_id=sid,
-                        actor_mode="fixed",
-                        goal=sc["description"],
-                        scenario_id=sc["id"],
-                        max_turns=len(sc["steps"]),
-                        max_time_s=req.max_time_s,
-                        eval_model=req.eval_model or "sonnet",
-                        on_turn=on_turn,
-                        on_complete=on_complete,
-                        on_error=on_error,
-                    )
-                except Exception as e:
-                    logger.exception(f"Match {match_id} session {sid} failed: {e}")
+                    try:
+                        await run_session(
+                            session_id=sid,
+                            actor_mode="fixed",
+                            goal=sc["description"],
+                            scenario_id=sc["id"],
+                            max_turns=len(sc["steps"]),
+                            max_time_s=req.max_time_s,
+                            eval_model=req.eval_model or "sonnet",
+                            on_turn=on_turn,
+                            on_complete=on_complete,
+                            on_error=on_error,
+                        )
+                    except Exception as e:
+                        logger.exception(f"Match {match_id} session {sid} failed: {e}")
 
-            # Launch all sessions in parallel — session_runner's semaphore
-            # limits how many actually run at once
+            # Launch all sessions — per-match semaphore limits parallelism
             await asyncio.gather(*(
                 run_one(sid, sc) for sid, sc in zip(session_ids, scenarios)
             ))
@@ -381,12 +388,17 @@ async def _evaluate_match(match_id: str):
         if ev:
             evals.append(ev)
 
-    # Compute pass rate (completed with all turns status = input-required)
+    # Compute pass rate — must complete AND score above threshold
+    from rubric import load_rubric as _load_rubric
+    _rubric = _load_rubric()
+    pass_threshold = _rubric.get("pass_threshold", 3.0)
+
     passed = 0
     for s in sessions:
         if s["status"] == "completed":
-            turns = db.get_turns(s["id"])
-            if turns and all(t.get("status") == "input-required" for t in turns if t.get("status")):
+            ev = db.get_evaluation(s["id"])
+            score = ev.get("overall_score") if ev else None
+            if score is not None and score >= pass_threshold:
                 passed += 1
 
     pass_rate = f"{passed}/{total}"
@@ -483,6 +495,9 @@ def get_match_report(match_id: str):
     sessions = db.get_match_sessions(match_id)
     scenarios_map = {s["id"]: s for s in get_fixed_scenarios()}
 
+    from rubric import load_rubric as _load_rubric
+    pass_threshold = _load_rubric().get("pass_threshold", 3.0)
+
     # Collect all turns and evaluations
     all_turns = []
     evaluations = []
@@ -502,8 +517,11 @@ def get_match_report(match_id: str):
     for s in sessions:
         turns = [t for t in all_turns if t.get("session_id") == s["id"]]
         ev = next((e for e in evaluations if e["session_id"] == s["id"]), None)
-        passed = s["status"] == "completed" and all(
-            t.get("status") == "input-required" for t in turns if t.get("status")
+        score = ev.get("overall_score") if ev else None
+        passed = (
+            s["status"] == "completed"
+            and score is not None
+            and score >= pass_threshold
         )
         scenario_results.append({
             "session_id": s["id"],
@@ -550,6 +568,7 @@ def get_match_report(match_id: str):
             "min_ttfb": round(min(ttfbs), 1) if ttfbs else 0,
             "max_ttfb": round(max(ttfbs), 1) if ttfbs else 0,
         },
+        "pass_threshold": pass_threshold,
         "by_category": by_category,
         "scenarios": scenario_results,
         "sessions": [dict(s) for s in sessions],
@@ -682,8 +701,88 @@ def get_reports(ring: Optional[str] = None):
 
 
 @app.get("/api/match-trends")
-def get_match_trends(ring: Optional[str] = None):
-    return db.get_match_trends(ring=ring)
+def get_match_trends_endpoint(ring: Optional[str] = None):
+    from rubric import load_rubric as _load_rubric
+    threshold = _load_rubric().get("pass_threshold", 3.0)
+    return db.get_match_trends(ring=ring, pass_threshold=threshold)
+
+
+@app.post("/api/match-trends/analyze")
+async def analyze_match_trends(ring: Optional[str] = None):
+    """Ask Joe's bot to deeply analyze Kai quality from match trend data."""
+    from rubric import load_rubric as _load_rubric
+    from actor_brain import _call_claude_async, EVAL_MODEL
+
+    threshold = _load_rubric().get("pass_threshold", 3.0)
+    data = db.get_match_trends(ring=ring, pass_threshold=threshold)
+    trends = data.get("trends", [])
+    categories = data.get("categories", [])
+
+    if not trends:
+        return {"analysis": "No match data available for analysis.", "ring": ring}
+
+    # Build comprehensive data summary for Claude
+    summary_lines = []
+    summary_lines.append(f"Environment: {(ring or 'all').upper()} Ring")
+    summary_lines.append(f"Total matches analyzed: {len(trends)}")
+    summary_lines.append(f"Categories tested: {', '.join(categories)}")
+    summary_lines.append(f"Pass threshold: {threshold}/5")
+    summary_lines.append("")
+
+    for i, t in enumerate(trends):
+        summary_lines.append(f"--- Match {i+1}: {t['match_name']} ({t.get('created_at', 'unknown date')}) ---")
+        summary_lines.append(f"  Overall Score: {t.get('overall_score', 'N/A')}, Pass Rate: {t.get('pass_rate', 'N/A')}")
+        for cat in categories:
+            c = t.get("categories", {}).get(cat)
+            if c:
+                summary_lines.append(
+                    f"  [{cat}] Score: {c.get('avg_score', 'N/A')}/5, "
+                    f"Pass: {c['passed']}/{c['total']} ({round(c['pass_rate']*100)}%), "
+                    f"Goal: {c.get('avg_goal', 'N/A')}, Context: {c.get('avg_context', 'N/A')}, "
+                    f"Quality: {c.get('avg_quality', 'N/A')}, "
+                    f"TTFT: {round(c.get('avg_ttfb_ms', 0))}ms, Total: {round(c.get('avg_total_ms', 0))}ms"
+                )
+        summary_lines.append("")
+
+    data_text = "\n".join(summary_lines)
+
+    prompt = f"""You are Joe, a senior QA engineer analyzing Katalon's Kai AI orchestrator agent for release readiness.
+
+You have comprehensive test data from automated match runs against Kai. Analyze this data and provide a release quality assessment.
+
+{data_text}
+
+Provide your analysis in this EXACT JSON format (no markdown, no code blocks):
+{{
+    "overall_quality": "PASS|FAIL|CAUTION",
+    "quality_score": N.N,
+    "release_recommendation": "GO|NO-GO|CONDITIONAL",
+    "executive_summary": "2-3 sentence high-level assessment for stakeholders",
+    "strengths": ["strength 1", "strength 2"],
+    "weaknesses": ["weakness 1", "weakness 2"],
+    "trend_analysis": "2-3 sentences on whether quality is improving, stable, or declining across matches",
+    "category_breakdown": {{
+        "category_name": "1 sentence assessment"
+    }},
+    "latency_assessment": "1-2 sentences on response time performance",
+    "recommendations": ["actionable recommendation 1", "actionable recommendation 2"],
+    "risk_factors": ["risk 1", "risk 2"],
+    "release_notes": "2-3 sentences suitable for a release quality note"
+}}"""
+
+    response = await _call_claude_async(prompt, EVAL_MODEL)
+
+    # Parse JSON response
+    import json as _json
+    try:
+        clean = response.strip()
+        if clean.startswith("```"):
+            clean = clean.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        analysis = _json.loads(clean)
+    except (_json.JSONDecodeError, IndexError):
+        analysis = {"executive_summary": response, "overall_quality": "UNKNOWN", "release_recommendation": "UNKNOWN"}
+
+    return {"analysis": analysis, "ring": ring, "matches_analyzed": len(trends)}
 
 
 @app.get("/api/config")
@@ -703,6 +802,7 @@ def get_config():
     return {
         "max_concurrent": MAX_CONCURRENT,
         "max_concurrent_matches": MAX_CONCURRENT_MATCHES,
+        "max_rounds_per_match": MAX_ROUNDS_PER_MATCH,
         "turn_model": TURN_MODEL,
         "eval_model": EVAL_MODEL,
         "claude_cli_available": claude_ok,
@@ -1013,11 +1113,17 @@ def reset_env_config_endpoint(user: str = Depends(require_admin)):
 
 
 @app.put("/api/config")
-def update_config(req: ConfigUpdate):
+def update_config(req: ConfigUpdate, user: str = Depends(require_admin)):
+    global MAX_CONCURRENT_MATCHES, _match_semaphore, MAX_ROUNDS_PER_MATCH
     from session_runner import set_max_concurrent
     from actor_brain import set_turn_model
     if req.max_concurrent is not None:
         set_max_concurrent(req.max_concurrent)
+    if req.max_concurrent_matches is not None:
+        MAX_CONCURRENT_MATCHES = req.max_concurrent_matches
+        _match_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MATCHES)
+    if req.max_rounds_per_match is not None:
+        MAX_ROUNDS_PER_MATCH = req.max_rounds_per_match
     if req.eval_model is not None:
         set_eval_model(req.eval_model)
         set_turn_model(req.eval_model)
