@@ -16,6 +16,7 @@ Usage:
     print(result.analytics)
 """
 import json
+import os
 import time
 import uuid
 import logging
@@ -57,7 +58,7 @@ class Analytics:
     request_start: float = 0.0
     first_byte: float = 0.0
     response_end: float = 0.0
-    ttfb_ms: float = 0.0  # time to first byte
+    ttfb_ms: float = 0.0  # time to first token
     total_ms: float = 0.0
     poll_count: int = 0
     poll_total_ms: float = 0.0
@@ -129,6 +130,123 @@ DEFAULT_TOOLS = [
 ]
 
 
+class _TokenCache:
+    """SQLite-based bearer token cache. Avoids repeated Puppeteer logins.
+
+    Stores tokens in the same DB as the web app (web/data/kai_tests.db).
+    Table: token_cache (env_key, email, platform_url, token, expires_at).
+    """
+
+    @classmethod
+    def _db_path(cls) -> str:
+        # Try web/data/ first (same DB as dashboard), fallback to scripts/data/
+        web_data = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "data")
+        if os.path.isdir(web_data):
+            return os.path.join(web_data, "kai_tests.db")
+        # Docker layout: /app/web/data/
+        app_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "data")
+        if os.path.isdir(app_data):
+            return os.path.join(app_data, "kai_tests.db")
+        # Fallback: create in scripts/data/
+        fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        os.makedirs(fallback, exist_ok=True)
+        return os.path.join(fallback, "kai_tests.db")
+
+    @classmethod
+    def _ensure_table(cls, conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS token_cache (
+                env_key TEXT PRIMARY KEY,
+                email TEXT NOT NULL,
+                platform_url TEXT NOT NULL,
+                token TEXT NOT NULL,
+                expires_at REAL NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+    @classmethod
+    def _env_key(cls, email: str, platform_url: str, account: str) -> str:
+        """Derive a stable env key from credentials."""
+        import hashlib
+        raw = f"{email}|{platform_url}|{account}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    @classmethod
+    def _decode_jwt_exp(cls, token: str) -> float:
+        """Extract expiry from JWT. Returns epoch seconds or now+1h as fallback."""
+        try:
+            import base64
+            parts = token.split(".")
+            if len(parts) >= 2:
+                payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                decoded = json.loads(base64.urlsafe_b64decode(payload))
+                if "exp" in decoded:
+                    return float(decoded["exp"])
+        except Exception:
+            pass
+        return time.time() + 3600
+
+    @classmethod
+    def get(cls, email: str, platform_url: str, account: str) -> Optional[str]:
+        """Return cached token if still valid (>5 min remaining), else None."""
+        import sqlite3
+        env_key = cls._env_key(email, platform_url, account)
+        try:
+            conn = sqlite3.connect(cls._db_path())
+            cls._ensure_table(conn)
+            row = conn.execute(
+                "SELECT token, expires_at FROM token_cache WHERE env_key = ?", (env_key,)
+            ).fetchone()
+            conn.close()
+            if row:
+                token, expires_at = row
+                remaining = expires_at - time.time()
+                if remaining > 300:
+                    logger.info(f"Token cache hit for {email} on {platform_url} (expires in {int(remaining)}s)")
+                    return token
+                logger.info(f"Token cache expired for {email} on {platform_url}")
+        except Exception as e:
+            logger.debug(f"Token cache read error: {e}")
+        return None
+
+    @classmethod
+    def put(cls, email: str, platform_url: str, account: str, token: str):
+        """Cache a token. Extracts expiry from JWT payload."""
+        import sqlite3
+        env_key = cls._env_key(email, platform_url, account)
+        expires_at = cls._decode_jwt_exp(token)
+        logger.info(f"Caching token for {email} on {platform_url} (expires in {int(expires_at - time.time())}s)")
+        try:
+            conn = sqlite3.connect(cls._db_path())
+            cls._ensure_table(conn)
+            conn.execute(
+                "INSERT OR REPLACE INTO token_cache (env_key, email, platform_url, token, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (env_key, email, platform_url, token, expires_at),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Token cache write error: {e}")
+
+    @classmethod
+    def clear(cls, email: str = None, platform_url: str = None, account: str = None):
+        """Clear cached tokens."""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(cls._db_path())
+            cls._ensure_table(conn)
+            if email and platform_url and account:
+                env_key = cls._env_key(email, platform_url, account)
+                conn.execute("DELETE FROM token_cache WHERE env_key = ?", (env_key,))
+            else:
+                conn.execute("DELETE FROM token_cache")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Token cache clear error: {e}")
+
+
 class KaiClient:
     """Client for interacting with Katalon's Kai orchestrator agent."""
 
@@ -153,9 +271,10 @@ class KaiClient:
                         key, value = line.split("=", 1)
                         env[key] = value.strip('"').strip("'")
 
-        email = env.get("TESTOPS_EMAIL", os.environ.get("TESTOPS_EMAIL", ""))
-        password = env.get("TESTOPS_PASSWORD", os.environ.get("TESTOPS_PASSWORD", ""))
-        account = env.get("TESTOPS_ACCOUNT", os.environ.get("TESTOPS_ACCOUNT", ""))
+        # Env vars override .env file (fire_runner passes active profile via env vars)
+        email = os.environ.get("TESTOPS_EMAIL") or env.get("TESTOPS_EMAIL", "")
+        password = os.environ.get("TESTOPS_PASSWORD") or env.get("TESTOPS_PASSWORD", "")
+        account = os.environ.get("TESTOPS_ACCOUNT") or env.get("TESTOPS_ACCOUNT", "")
 
         if not all([email, password, account]):
             raise ValueError("Missing TESTOPS_EMAIL, TESTOPS_PASSWORD, or TESTOPS_ACCOUNT in .env")
@@ -164,20 +283,19 @@ class KaiClient:
         base_url = kwargs.pop("base_url", None) or os.environ.get("KAI_BASE_URL", cls.DEFAULT_BASE_URL)
         login_url = kwargs.pop("login_url", None) or os.environ.get("KAI_LOGIN_URL", cls.DEFAULT_LOGIN_URL)
         platform_url = kwargs.pop("platform_url", None) or os.environ.get("KAI_PLATFORM_URL", cls.DEFAULT_PLATFORM_URL)
+        # Also allow project/org/account overrides via env vars
+        if "project_id" not in kwargs and os.environ.get("KAI_PROJECT_ID"):
+            kwargs["project_id"] = os.environ["KAI_PROJECT_ID"]
+        if "org_id" not in kwargs and os.environ.get("KAI_ORG_ID"):
+            kwargs["org_id"] = os.environ["KAI_ORG_ID"]
+        if "account_id" not in kwargs and os.environ.get("KAI_ACCOUNT_ID"):
+            kwargs["account_id"] = os.environ["KAI_ACCOUNT_ID"]
+        if "project_name" not in kwargs and os.environ.get("KAI_PROJECT_NAME"):
+            kwargs["project_name"] = os.environ["KAI_PROJECT_NAME"]
+        if "account_name" not in kwargs and os.environ.get("KAI_ACCOUNT_NAME"):
+            kwargs["account_name"] = os.environ["KAI_ACCOUNT_NAME"]
 
-        resp = httpx.post(
-            login_url,
-            json={"url": platform_url, "email": email, "password": password, "account": account},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        token_data = data.get("token", {})
-        token = token_data.get("access_token") if isinstance(token_data, dict) else token_data
-        if not token:
-            raise ValueError(f"Failed to get bearer token: {data}")
-
-        logger.info(f"Generated bearer token for {email} on {base_url}")
+        token = cls._get_or_refresh_token(email, password, account, login_url, platform_url, base_url)
         return cls(token=token, base_url=base_url, **kwargs)
 
     @classmethod
@@ -190,6 +308,19 @@ class KaiClient:
         login_url = kwargs.pop("login_url", None) or cls.DEFAULT_LOGIN_URL
         platform_url = kwargs.pop("platform_url", None) or cls.DEFAULT_PLATFORM_URL
 
+        token = cls._get_or_refresh_token(email, password, account, login_url, platform_url, base_url)
+        return cls(token=token, base_url=base_url, **kwargs)
+
+    @classmethod
+    def _get_or_refresh_token(cls, email, password, account, login_url, platform_url, base_url):
+        """Get token from cache or login API. Caches for reuse."""
+        # Check cache first
+        cached = _TokenCache.get(email, platform_url, account)
+        if cached:
+            return cached
+
+        # Login via Puppeteer API (slow ~5-10s)
+        logger.info(f"Requesting new bearer token for {email} on {platform_url}...")
         resp = httpx.post(
             login_url,
             json={"url": platform_url, "email": email, "password": password, "account": account},
@@ -202,8 +333,10 @@ class KaiClient:
         if not token:
             raise ValueError(f"Failed to get bearer token: {data}")
 
-        logger.info(f"Generated bearer token for {email} on {base_url}")
-        return cls(token=token, base_url=base_url, **kwargs)
+        # Cache for next time
+        _TokenCache.put(email, platform_url, account, token)
+        logger.info(f"Generated & cached bearer token for {email} on {base_url}")
+        return token
 
     def __init__(
         self,
@@ -218,7 +351,7 @@ class KaiClient:
         account_name: str = "Katalon Hub",
         base_url: str = None,
         poll_interval: float = 2.0,
-        poll_timeout: float = 120.0,
+        poll_timeout: float = 300.0,
     ):
         self.token = token
         self.BASE_URL = base_url or self.DEFAULT_BASE_URL
@@ -233,7 +366,7 @@ class KaiClient:
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
 
-        self._client = httpx.Client(timeout=120.0, follow_redirects=True)
+        self._client = httpx.Client(timeout=300.0, follow_redirects=True)
 
     def _headers(self, accept: str = "application/json") -> dict:
         return {
@@ -387,7 +520,7 @@ class KaiClient:
         if response.status == "working":
             self._poll_for_completion(thread_id, connect_payload, response, analytics)
 
-        # If TTFB wasn't set during polling (e.g. immediate response), set it now
+        # If TTFT wasn't set during polling (e.g. immediate response), set it now
         if not analytics.first_byte:
             analytics.first_byte = time.time()
             analytics.ttfb_ms = (analytics.first_byte - analytics.request_start) * 1000
@@ -437,7 +570,7 @@ class KaiClient:
                 logger.debug(f"Poll #{analytics.poll_count}: status={status} events={len(history)}")
 
                 if status in (ConversationStatus.INPUT_REQUIRED, "input-required"):
-                    # Agent finished — TTFB = time to first actual content
+                    # Agent finished — TTFT = time to first actual content
                     if not analytics.first_byte:
                         analytics.first_byte = time.time()
                         analytics.ttfb_ms = (analytics.first_byte - analytics.request_start) * 1000

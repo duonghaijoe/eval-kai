@@ -14,7 +14,7 @@ Copilot, Gemini, Claude) to expose gaps and drive improvement. An agentic
 AI in 2026 must compete on speed, not get free passes for being "complex".
 """
 
-# ── TTFB (Time to First Byte / First Response) ───────────────────
+# ── TTFT (Time to First Token / First Response) ───────────────────
 # How fast Kai acknowledges the request and starts processing.
 # This is the initial API round-trip — no excuse for being slow here
 # since it's just accepting the request, not doing work yet.

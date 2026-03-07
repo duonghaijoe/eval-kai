@@ -1,6 +1,6 @@
 import { useState, useEffect, createContext, useContext } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock } from 'lucide-react'
+import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock, TrendingUp } from 'lucide-react'
 import './App.css'
 import SessionLauncher from './components/SessionLauncher'
 import SessionList from './components/SessionList'
@@ -8,6 +8,7 @@ import SessionDetail from './components/SessionDetail'
 import MatchList from './components/MatchList'
 import MatchReport from './components/MatchReport'
 import Reports from './components/Reports'
+import MatchTrends from './components/MatchTrends'
 import RubricSettings from './components/RubricSettings'
 import EnvironmentSettings from './components/EnvironmentSettings'
 import { listSessions, listMatches, checkHealth, getConfig, login, getMe, logout } from './api'
@@ -154,6 +155,9 @@ function App() {
             <NavLink to="/reports" className={({ isActive }) => isActive ? 'active' : ''}>
               <BarChart3 size={16} /> Fight Record
             </NavLink>
+            <NavLink to="/trends" className={({ isActive }) => isActive ? 'active' : ''}>
+              <TrendingUp size={16} /> Match Analysis
+            </NavLink>
             <NavLink to="/rubric" className={({ isActive }) => isActive ? 'active' : ''}>
               <Scale size={16} /> Judging Criteria
             </NavLink>
@@ -202,6 +206,7 @@ function App() {
             <Route path="/sessions/:id" element={<SessionDetail />} />
             <Route path="/batch/:batchId" element={<MatchReport />} />
             <Route path="/reports" element={<Reports />} />
+            <Route path="/trends" element={<MatchTrends />} />
             <Route path="/rubric" element={<RubricSettings />} />
             <Route path="/environment" element={<EnvironmentSettings />} />
           </Routes>

@@ -1,51 +1,31 @@
 import { useState, useEffect } from 'react'
-import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity } from 'lucide-react'
-import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth } from '../api'
+import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity, Bot } from 'lucide-react'
+import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth } from '../api'
 import { useAdmin } from '../App'
 
 function HealthResult({ health }) {
   if (!health) return null
-  const { kai, joe_bot } = health
+  const { kai } = health
   return (
     <div style={{ marginTop: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', borderRadius: '6px', fontSize: '0.73rem' }}>
-      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-          {kai.ok
-            ? <Heart size={11} style={{ color: 'var(--green)' }} />
-            : <HeartOff size={11} style={{ color: 'var(--red)' }} />
-          }
-          <strong>Kai:</strong>
-          <span style={{ color: kai.ok ? 'var(--green)' : 'var(--red)' }}>
-            {kai.ok ? 'OK' : 'Failed'}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+        {kai.ok
+          ? <Heart size={11} style={{ color: 'var(--green)' }} />
+          : <HeartOff size={11} style={{ color: 'var(--red)' }} />
+        }
+        <strong>Kai:</strong>
+        <span style={{ color: kai.ok ? 'var(--green)' : 'var(--red)' }}>
+          {kai.ok ? 'OK' : 'Failed'}
+        </span>
+        {kai.ok && kai.ttfb_ms > 0 && (
+          <span style={{ color: 'var(--text-muted)' }}>
+            (TTFT {Math.round(kai.ttfb_ms)}ms, Total {Math.round(kai.total_ms)}ms)
           </span>
-          {kai.ok && kai.ttfb_ms > 0 && (
-            <span style={{ color: 'var(--text-muted)' }}>
-              (TTFB {Math.round(kai.ttfb_ms)}ms, Total {Math.round(kai.total_ms)}ms)
-            </span>
-          )}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-          {joe_bot.ok
-            ? <Heart size={11} style={{ color: 'var(--green)' }} />
-            : <HeartOff size={11} style={{ color: 'var(--red)' }} />
-          }
-          <strong>Joe's AI Bot:</strong>
-          <span style={{ color: joe_bot.ok ? 'var(--green)' : 'var(--red)' }}>
-            {joe_bot.ok ? 'OK' : 'Failed'}
-          </span>
-          {joe_bot.latency_ms > 0 && (
-            <span style={{ color: 'var(--text-muted)' }}>({Math.round(joe_bot.latency_ms)}ms)</span>
-          )}
-        </div>
+        )}
       </div>
       {kai.ok && kai.response && (
         <div style={{ marginTop: '0.3rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxHeight: '3rem', overflow: 'hidden' }}>
           Kai: "{kai.response.slice(0, 150)}{kai.response.length > 150 ? '...' : ''}"
-        </div>
-      )}
-      {joe_bot.ok && joe_bot.response && (
-        <div style={{ marginTop: '0.2rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxHeight: '3rem', overflow: 'hidden' }}>
-          Joe's Bot: "{joe_bot.response.slice(0, 150)}{joe_bot.response.length > 150 ? '...' : ''}"
         </div>
       )}
       {!kai.ok && kai.response && (
@@ -58,9 +38,143 @@ function HealthResult({ health }) {
           )}
         </div>
       )}
-      {!joe_bot.ok && joe_bot.response && (
-        <div style={{ marginTop: '0.2rem', color: 'var(--red)', fontSize: '0.68rem' }}>
-          Joe's Bot: {joe_bot.response.slice(0, 200)}
+    </div>
+  )
+}
+
+function JoeBotCard() {
+  const [health, setHealth] = useState(null)
+  const [checking, setChecking] = useState(false)
+  const [authUrl, setAuthUrl] = useState(null)
+  const [authCode, setAuthCode] = useState('')
+  const [authStatus, setAuthStatus] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  const runCheck = async () => {
+    setChecking(true)
+    setHealth(null)
+    try {
+      const result = await checkJoeBotHealth()
+      setHealth(result)
+    } catch (e) {
+      setHealth({ ok: false, response: e.message })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const startAuth = async () => {
+    setAuthStatus(null)
+    try {
+      const result = await startJoeBotAuth()
+      if (result.url) {
+        setAuthUrl(result.url)
+      } else {
+        setAuthStatus({ ok: false, message: result.error || 'Could not get auth URL' })
+      }
+    } catch (e) {
+      setAuthStatus({ ok: false, message: e.message })
+    }
+  }
+
+  const submitCode = async () => {
+    if (!authCode.trim()) return
+    setSubmitting(true)
+    setAuthStatus(null)
+    try {
+      const result = await completeJoeBotAuth(authCode.trim())
+      if (result.ok) {
+        setAuthStatus({ ok: true, message: 'Authorized successfully!' })
+        setAuthUrl(null)
+        setAuthCode('')
+        // Re-run health check
+        setTimeout(runCheck, 1000)
+      } else {
+        setAuthStatus({ ok: false, message: result.output || 'Auth failed' })
+      }
+    } catch (e) {
+      setAuthStatus({ ok: false, message: e.message })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+        <h3 style={{ margin: 0 }}>
+          <Bot size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />
+          Joe's AI Bot (Claude)
+        </h3>
+        <button onClick={runCheck} disabled={checking} style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>
+          {checking
+            ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Testing...</>
+            : <><Activity size={11} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} />Health Check</>
+          }
+        </button>
+      </div>
+
+      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+        Joe's AI Bot uses Claude to drive conversations and evaluate Kai's responses. It's shared across all environments.
+      </div>
+
+      {health && (
+        <div style={{ padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', borderRadius: '6px', fontSize: '0.73rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+            {health.ok
+              ? <Heart size={11} style={{ color: 'var(--green)' }} />
+              : <HeartOff size={11} style={{ color: 'var(--red)' }} />
+            }
+            <strong>Status:</strong>
+            <span style={{ color: health.ok ? 'var(--green)' : 'var(--red)' }}>
+              {health.ok ? 'OK' : 'Not Available'}
+            </span>
+            {health.latency_ms > 0 && (
+              <span style={{ color: 'var(--text-muted)' }}>({Math.round(health.latency_ms)}ms)</span>
+            )}
+          </div>
+          {health.ok && health.response && (
+            <div style={{ marginTop: '0.3rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+              "{health.response.slice(0, 150)}"
+            </div>
+          )}
+          {!health.ok && health.response && (
+            <div style={{ marginTop: '0.3rem', color: 'var(--red)', fontSize: '0.68rem' }}>
+              {health.response.slice(0, 300)}
+            </div>
+          )}
+          {!health.ok && (health.needs_auth || health.response?.toLowerCase().includes('api key') || health.response?.toLowerCase().includes('auth')) && !authUrl && (
+            <button onClick={startAuth} style={{ marginTop: '0.4rem', fontSize: '0.7rem', padding: '0.25em 0.6em' }} className="primary">
+              Authorize Claude
+            </button>
+          )}
+        </div>
+      )}
+
+      {authUrl && (
+        <div style={{ marginTop: '0.5rem', padding: '0.6rem', background: 'rgba(99,102,241,0.06)', borderRadius: '6px', border: '1px solid var(--accent)', fontSize: '0.75rem' }}>
+          <div style={{ fontWeight: 600, marginBottom: '0.3rem' }}>Step 1: Open this URL and authorize</div>
+          <a href={authUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', wordBreak: 'break-all' }}>
+            {authUrl} <ExternalLink size={9} style={{ verticalAlign: 'middle' }} />
+          </a>
+          <div style={{ fontWeight: 600, marginTop: '0.5rem', marginBottom: '0.3rem' }}>Step 2: Paste the auth code below</div>
+          <div style={{ display: 'flex', gap: '0.3rem' }}>
+            <input
+              value={authCode}
+              onChange={e => setAuthCode(e.target.value)}
+              placeholder="Paste authorization code..."
+              style={{ flex: 1, fontSize: '0.75rem' }}
+              onKeyDown={e => e.key === 'Enter' && submitCode()}
+            />
+            <button onClick={submitCode} disabled={!authCode.trim() || submitting} className="primary" style={{ fontSize: '0.7rem' }}>
+              {submitting ? <span className="spinner" style={{ width: 10, height: 10 }} /> : 'Submit'}
+            </button>
+          </div>
+          {authStatus && (
+            <div style={{ marginTop: '0.3rem', color: authStatus.ok ? 'var(--green)' : 'var(--red)', fontSize: '0.7rem' }}>
+              {authStatus.message}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -82,7 +196,7 @@ function EnvCard({ envKey, env, isActive, onSelect, onEdit, onDelete, readOnly }
       const result = await checkEnvHealth(envKey)
       setHealth(result)
     } catch (e) {
-      setHealth({ kai: { ok: false, response: e.message }, claude_cli: { ok: false, response: e.message }, healthy: false })
+      setHealth({ kai: { ok: false, response: e.message }, healthy: false })
     } finally {
       setHealthChecking(false)
     }
@@ -120,7 +234,7 @@ function EnvCard({ envKey, env, isActive, onSelect, onEdit, onDelete, readOnly }
             onClick={runHealthCheck}
             disabled={healthChecking}
             style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}
-            title="Test Kai & Joe's AI Bot connectivity"
+            title="Test Kai connectivity"
           >
             {healthChecking
               ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Testing...</>
@@ -348,6 +462,8 @@ export default function EnvironmentSettings() {
         Configure which Kai environment to test against. Switch between production, staging, or custom environments.
         Credentials are shared from the server's .env file — only the target URL and project change.
       </div>
+
+      <JoeBotCard />
 
       <div className="card">
         <h3><Globe size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Test Environments</h3>

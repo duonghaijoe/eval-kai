@@ -96,7 +96,7 @@ function DimensionEditor({ dimKey, dim, onChange, isLatency, readOnly }) {
               <label style={{ marginBottom: '0.35rem' }}>Latency Thresholds (ms)</label>
               <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: '0.3rem', alignItems: 'center', fontSize: '0.75rem' }}>
                 <span style={{ fontWeight: 600 }}>Score</span>
-                <span style={{ fontWeight: 600 }}>TTFB max</span>
+                <span style={{ fontWeight: 600 }}>TTFT max</span>
                 <span style={{ fontWeight: 600 }}>Total max</span>
                 {[5, 4, 3, 2].map(score => (
                   <>

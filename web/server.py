@@ -61,7 +61,7 @@ def _sign_token(username: str) -> str:
     return f"{payload}:{sig}"
 
 
-def _verify_token(token: str) -> str | None:
+def _verify_token(token: str) -> Optional[str]:
     parts = token.split(":")
     if len(parts) != 3:
         return None
@@ -196,6 +196,16 @@ async def start_session(req: StartSessionRequest):
     session_id = str(uuid.uuid4())[:8]
     env_config = load_env_config()
     active_env_key = env_config.get("active", "production")
+    active_env = env_config.get("environments", {}).get(active_env_key, {})
+    env_info = {
+        "base_url": active_env.get("base_url", ""),
+        "platform_url": active_env.get("platform_url", ""),
+        "project_id": active_env.get("project_id", ""),
+        "project_name": active_env.get("project_name", ""),
+        "org_id": active_env.get("org_id", ""),
+        "account_name": active_env.get("account_name", ""),
+        "joe_model": req.eval_model or "sonnet",
+    }
     db.create_session(
         session_id=session_id,
         actor_mode=req.actor_mode,
@@ -204,6 +214,7 @@ async def start_session(req: StartSessionRequest):
         max_turns=req.max_turns,
         max_time_s=req.max_time_s,
         env_key=active_env_key,
+        env_info=env_info,
     )
 
     # Start session in background
@@ -271,6 +282,16 @@ async def create_match(req: CreateMatchRequest):
     )
 
     # Create sessions for each scenario
+    active_env = env_config.get("environments", {}).get(active_env_key, {})
+    env_info = {
+        "base_url": active_env.get("base_url", ""),
+        "platform_url": active_env.get("platform_url", ""),
+        "project_id": active_env.get("project_id", ""),
+        "project_name": active_env.get("project_name", ""),
+        "org_id": active_env.get("org_id", ""),
+        "account_name": active_env.get("account_name", ""),
+        "joe_model": req.eval_model or "sonnet",
+    }
     session_ids = []
     for sc in scenarios:
         sid = str(uuid.uuid4())[:8]
@@ -284,6 +305,7 @@ async def create_match(req: CreateMatchRequest):
             max_time_s=req.max_time_s,
             match_id=match_id,
             env_key=active_env_key,
+            env_info=env_info,
         )
 
     # Run sessions in parallel, bounded by the session semaphore
@@ -535,7 +557,7 @@ def get_match_report(match_id: str):
 
 
 @app.delete("/api/matches/{match_id}")
-def delete_match_endpoint(match_id: str):
+def delete_match_endpoint(match_id: str, user: str = Depends(require_admin)):
     match = db.get_match(match_id)
     if not match:
         raise HTTPException(404, "Match not found")
@@ -543,6 +565,18 @@ def delete_match_endpoint(match_id: str):
         raise HTTPException(400, "Cannot delete a running match")
     db.delete_match(match_id)
     return {"deleted": match_id}
+
+
+@app.post("/api/matches/bulk-delete")
+def bulk_delete_matches(request: dict, user: str = Depends(require_admin)):
+    ids = request.get("ids", [])
+    deleted = []
+    for mid in ids:
+        match = db.get_match(mid)
+        if match and match["status"] != "running":
+            db.delete_match(mid)
+            deleted.append(mid)
+    return {"deleted": deleted}
 
 
 # Keep old batch endpoint as redirect for compatibility
@@ -587,13 +621,29 @@ def get_session(session_id: str):
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
+    # Backfill env_info from env config if empty (pre-migration sessions)
+    env_info = session.get("env_info") or {}
+    if not env_info or not env_info.get("base_url"):
+        env_key = session.get("env_key", "production")
+        env_config = load_env_config()
+        envs = env_config.get("environments", {})
+        env = envs.get(env_key, envs.get("production", {}))
+        session["env_info"] = {
+            "base_url": env.get("base_url", ""),
+            "platform_url": env.get("platform_url", ""),
+            "project_id": env.get("project_id", ""),
+            "project_name": env.get("project_name", ""),
+            "org_id": env.get("org_id", ""),
+            "account_name": env.get("account_name", ""),
+            "joe_model": session.get("eval_model", "sonnet"),
+        }
     turns = db.get_turns(session_id)
     evaluation = db.get_evaluation(session_id)
     return {"session": session, "turns": turns, "evaluation": evaluation}
 
 
 @app.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, user: str = Depends(require_admin)):
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
@@ -606,14 +656,34 @@ def delete_session(session_id: str):
     return {"deleted": session_id}
 
 
+@app.post("/api/sessions/bulk-delete")
+def bulk_delete_sessions(request: dict, user: str = Depends(require_admin)):
+    ids = request.get("ids", [])
+    deleted = []
+    for sid in ids:
+        session = db.get_session(sid)
+        if session and session["status"] != "running":
+            with db.get_conn() as conn:
+                conn.execute("DELETE FROM turns WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM evaluations WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            deleted.append(sid)
+    return {"deleted": deleted}
+
+
 @app.get("/api/scenarios")
 def list_scenarios():
     return {"scenarios": get_fixed_scenarios()}
 
 
 @app.get("/api/reports")
-def get_reports():
-    return db.get_report_data()
+def get_reports(ring: Optional[str] = None):
+    return db.get_report_data(ring=ring)
+
+
+@app.get("/api/match-trends")
+def get_match_trends(ring: Optional[str] = None):
+    return db.get_match_trends(ring=ring)
 
 
 @app.get("/api/config")
@@ -621,9 +691,10 @@ def get_config():
     from actor_brain import EVAL_MODEL, TURN_MODEL
     # Check if claude CLI is available
     import subprocess
+    _clean_env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
     claude_ok = False
     try:
-        r = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=5, env=_clean_env)
         claude_ok = r.returncode == 0
     except Exception:
         pass
@@ -644,37 +715,14 @@ def get_config():
 
 @app.get("/api/health")
 async def health_check():
-    """Quick health check — tests Joe's AI Bot and Kai API on the active environment."""
-    import subprocess
+    """Quick health check — tests Kai API on the active environment."""
     import time as _time
-    from actor_brain import TURN_MODEL
 
     result = {
-        "joe_bot": {"ok": False, "response": None, "latency_ms": 0},
         "kai_api": {"ok": False, "response": None, "latency_ms": 0},
     }
 
-    # 1. Check Joe's AI Bot (Claude CLI) — in thread to avoid blocking
-    try:
-        def _check_joe_bot():
-            r = subprocess.run(
-                ["claude", "-p", "Say hi back in one short sentence.", "--output-format", "text", "--model", TURN_MODEL, "--max-turns", "1"],
-                capture_output=True, text=True, timeout=30,
-            )
-            return r
-        t0 = _time.time()
-        r = await asyncio.to_thread(_check_joe_bot)
-        latency = (_time.time() - t0) * 1000
-        result["joe_bot"]["latency_ms"] = round(latency, 1)
-        if r.returncode == 0 and r.stdout.strip():
-            result["joe_bot"]["ok"] = True
-            result["joe_bot"]["response"] = r.stdout.strip()[:200]
-        else:
-            result["joe_bot"]["response"] = r.stderr.strip()[:200] if r.stderr else "empty response"
-    except Exception as e:
-        result["joe_bot"]["response"] = str(e)[:200]
-
-    # 2. Check Kai API with a quick auth + ping — in thread to avoid blocking
+    # Check Kai API with a quick auth + ping — in thread to avoid blocking
     try:
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
@@ -689,7 +737,7 @@ async def health_check():
     except Exception as e:
         result["kai_api"]["response"] = str(e)[:200]
 
-    result["healthy"] = result["joe_bot"]["ok"] and result["kai_api"]["ok"]
+    result["healthy"] = result["kai_api"]["ok"]
     return result
 
 
@@ -732,10 +780,8 @@ def update_env_config(request: dict, user: str = Depends(require_admin)):
 
 @app.get("/api/env-config/{env_key}/health")
 async def env_health_check(env_key: str):
-    """Health check for a specific environment — tests Kai API (say Hi) and Claude CLI."""
-    import subprocess
+    """Health check for a specific environment — tests Kai API (say Hi)."""
     import time as _time
-    from actor_brain import TURN_MODEL
 
     # Use full config (with real credentials, not the safe/masked version)
     config = load_env_config()
@@ -749,7 +795,6 @@ async def env_health_check(env_key: str):
         "env_key": env_key,
         "env_name": env.get("name", env_key),
         "kai": {"ok": False, "response": None, "latency_ms": 0},
-        "joe_bot": {"ok": False, "response": None, "latency_ms": 0},
     }
 
     # 1. Test Kai — authenticate and send "Hi"
@@ -831,27 +876,128 @@ async def env_health_check(env_key: str):
             else:
                 result["kai"]["response"] = err_str[:300]
 
-    # 2. Test Joe's AI Bot (Claude CLI) — in thread to avoid blocking
+    result["healthy"] = result["kai"]["ok"]
+    return result
+
+
+@app.get("/api/joe-bot/health")
+async def joe_bot_health():
+    """Health check for Joe's AI Bot (Claude CLI)."""
+    import subprocess
+    import time as _time
+    from actor_brain import TURN_MODEL
+
+    _clean_env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
+    result = {"ok": False, "response": None, "latency_ms": 0, "needs_auth": False}
+
     try:
-        def _check_joe():
+        def _check():
             return subprocess.run(
                 ["claude", "-p", "Say hi back in one short sentence.", "--output-format", "text", "--model", TURN_MODEL, "--max-turns", "1"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30, env=_clean_env,
             )
         t0 = _time.time()
-        r = await asyncio.to_thread(_check_joe)
+        r = await asyncio.to_thread(_check)
         latency = (_time.time() - t0) * 1000
-        result["joe_bot"]["latency_ms"] = round(latency, 1)
+        result["latency_ms"] = round(latency, 1)
         if r.returncode == 0 and r.stdout.strip():
-            result["joe_bot"]["ok"] = True
-            result["joe_bot"]["response"] = r.stdout.strip()[:200]
+            result["ok"] = True
+            result["response"] = r.stdout.strip()[:200]
         else:
-            result["joe_bot"]["response"] = r.stderr.strip()[:200] if r.stderr else "empty response"
+            stderr = r.stderr.strip() if r.stderr else ""
+            result["response"] = stderr[:300] or "empty response"
+            if "api key" in stderr.lower() or "auth" in stderr.lower() or "login" in stderr.lower():
+                result["needs_auth"] = True
+    except FileNotFoundError:
+        result["response"] = "Claude CLI not found. Is `claude` installed?"
     except Exception as e:
-        result["joe_bot"]["response"] = str(e)[:200]
+        result["response"] = str(e)[:200]
 
-    result["healthy"] = result["kai"]["ok"] and result["joe_bot"]["ok"]
     return result
+
+
+@app.post("/api/joe-bot/auth/start")
+async def joe_bot_auth_start():
+    """Start Claude CLI OAuth flow. Returns the auth URL for the user to visit."""
+    import subprocess
+    import re
+    _clean_env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
+
+    try:
+        # Run `claude auth login` which outputs the OAuth URL
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "auth", "login",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE,
+            env=_clean_env,
+        )
+        # Read output for a few seconds to get the URL
+        output = ""
+        try:
+            stdout_data = await asyncio.wait_for(proc.stdout.read(4096), timeout=10)
+            output = stdout_data.decode("utf-8", errors="replace")
+        except asyncio.TimeoutError:
+            pass
+
+        # Also check stderr
+        try:
+            stderr_data = await asyncio.wait_for(proc.stderr.read(4096), timeout=2)
+            output += stderr_data.decode("utf-8", errors="replace")
+        except asyncio.TimeoutError:
+            pass
+
+        # Try to find URL in output
+        url_match = re.search(r'https?://[^\s]+', output)
+
+        # Kill the process (we just needed the URL)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+        if url_match:
+            return {"url": url_match.group(), "output": output[:500]}
+        else:
+            return {"url": None, "output": output[:500], "error": "Could not find auth URL in output"}
+    except FileNotFoundError:
+        raise HTTPException(400, "Claude CLI not found")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/joe-bot/auth/complete")
+async def joe_bot_auth_complete(request: dict):
+    """Complete Claude CLI OAuth flow with the auth code from the user."""
+    code = request.get("code", "").strip()
+    if not code:
+        raise HTTPException(400, "Auth code is required")
+
+    import subprocess
+    _clean_env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
+
+    try:
+        # Pipe the code to `claude auth login`
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "auth", "login",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE,
+            env=_clean_env,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=code.encode()), timeout=30
+        )
+        output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+
+        if proc.returncode == 0 or "success" in output.lower() or "logged in" in output.lower():
+            return {"ok": True, "output": output[:500]}
+        else:
+            return {"ok": False, "output": output[:500]}
+    except asyncio.TimeoutError:
+        raise HTTPException(500, "Auth process timed out")
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 @app.delete("/api/env-config/{env_key}")

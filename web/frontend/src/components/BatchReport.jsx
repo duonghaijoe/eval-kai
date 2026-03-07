@@ -88,7 +88,7 @@ export default function BatchReport() {
             <Clock size={18} style={{ color: 'var(--blue)' }} />
             {formatMs(latency.avg_ttfb)}
           </div>
-          <div className="stat-label">Avg TTFB</div>
+          <div className="stat-label">Avg TTFT</div>
         </div>
         <div className="card">
           <div className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -132,7 +132,7 @@ export default function BatchReport() {
               <th>Scenario</th>
               <th>Status</th>
               <th>Turns</th>
-              <th>Avg TTFB</th>
+              <th>Avg TTFT</th>
               <th>Avg Total</th>
               <th>Score</th>
               <th>Session</th>

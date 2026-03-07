@@ -84,7 +84,22 @@ export async function getSession(sessionId) {
 }
 
 export async function deleteSession(sessionId) {
-  const res = await fetch(`${BASE}/api/sessions/${sessionId}`, { method: 'DELETE' });
+  const res = await fetch(`${BASE}/api/sessions/${sessionId}`, { method: 'DELETE', headers: authHeaders() });
+  if (res.status === 401) throw new Error('Admin login required');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to delete');
+  }
+  return res.json();
+}
+
+export async function bulkDeleteSessions(ids) {
+  const res = await fetch(`${BASE}/api/sessions/bulk-delete`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ ids }),
+  });
+  if (res.status === 401) throw new Error('Admin login required');
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || 'Failed to delete');
@@ -123,10 +138,25 @@ export async function getMatchReport(matchId) {
 }
 
 export async function deleteMatch(matchId) {
-  const res = await fetch(`${BASE}/api/matches/${matchId}`, { method: 'DELETE' });
+  const res = await fetch(`${BASE}/api/matches/${matchId}`, { method: 'DELETE', headers: authHeaders() });
+  if (res.status === 401) throw new Error('Admin login required');
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || 'Failed to delete match');
+  }
+  return res.json();
+}
+
+export async function bulkDeleteMatches(ids) {
+  const res = await fetch(`${BASE}/api/matches/bulk-delete`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ ids }),
+  });
+  if (res.status === 401) throw new Error('Admin login required');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to delete');
   }
   return res.json();
 }
@@ -226,8 +256,15 @@ export async function getScenarios() {
   return res.json();
 }
 
-export async function getReports() {
-  const res = await fetch(`${BASE}/api/reports`);
+export async function getReports(ring = null) {
+  const params = ring && ring !== 'all' ? `?ring=${ring}` : '';
+  const res = await fetch(`${BASE}/api/reports${params}`);
+  return res.json();
+}
+
+export async function getMatchTrends(ring = null) {
+  const params = ring ? `?ring=${ring}` : '';
+  const res = await fetch(`${BASE}/api/match-trends${params}`);
   return res.json();
 }
 
@@ -253,6 +290,30 @@ export async function updateConfig(config) {
     body: JSON.stringify(config),
   });
   return res.json();
+}
+
+// ── Joe Bot ─────────────────────────────────────────────────────
+
+export async function checkJoeBotHealth() {
+  const res = await fetch(`${BASE}/api/joe-bot/health`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function startJoeBotAuth() {
+  const res = await fetch(`${BASE}/api/joe-bot/auth/start`, { method: 'POST' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function completeJoeBotAuth(code) {
+  const res = await fetch(`${BASE}/api/joe-bot/auth/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
 }
 
 export function connectWebSocket(sessionId = null) {

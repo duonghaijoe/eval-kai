@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 import database as db
+from env_config import get_active_env, load_env_config
 
 logger = logging.getLogger(__name__)
 
@@ -23,80 +24,53 @@ RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 
 def _build_fire_prompt(goal: str, max_turns: int, max_time_s: float, session_id: str) -> str:
     """Build the autonomous fire-and-forget prompt for Claude."""
-    return f"""You are an autonomous test actor for Katalon's Kai orchestrator agent. Run the ENTIRE test session without stopping.
+    return f"""You are an autonomous test actor. Run the ENTIRE test session using ONLY the bash commands below. Do NOT read files, explore directories, or run any other commands.
 
 ## Objective
 {goal}
 
-## Instructions
-
-1. Start a conversation session:
+## Step 1 — Start session
 ```bash
-cd {SCRIPTS_DIR} && python3 kai_conversation.py start --env --max-turns {max_turns} --max-time {int(max_time_s)}
+cd {SCRIPTS_DIR} && python3 kai_conversation.py start --env --max-rounds {max_turns} --max-time {int(max_time_s)}
 ```
-Extract the session_id from the JSON output.
+Extract the match_id from the JSON output.
 
-2. For each turn, send a message to Kai:
+## Step 2 — Send {max_turns} rounds (one bash call each)
 ```bash
-cd {SCRIPTS_DIR} && python3 kai_conversation.py turn --session <SESSION_ID> --env -m "<YOUR_MESSAGE>"
+cd {SCRIPTS_DIR} && python3 kai_conversation.py round --match <MATCH_ID> --env --message "<YOUR_MESSAGE>"
 ```
+After each round, read the JSON response and decide the next message:
+- Start with clear, direct questions about the objective
+- Get increasingly specific in follow-ups
+- Test context retention by referencing earlier responses
+- Include at least one edge case or unexpected input
+- If a round errors, note it and continue to the next
 
-3. After each turn, read Kai's response and decide the next message:
-   - Start with clear, direct questions about the objective
-   - Get increasingly specific in follow-ups
-   - Test context retention by referencing earlier responses
-   - Include at least one edge case
-   - If Kai errors, note it and try recovery
-
-4. After all turns, end the session:
+## Step 3 — End session
 ```bash
-cd {SCRIPTS_DIR} && python3 kai_conversation.py end --session <SESSION_ID> --env --output {RESULTS_DIR}/kai_fire_{session_id}.json
+cd {SCRIPTS_DIR} && python3 kai_conversation.py end --match <MATCH_ID> --env --output {RESULTS_DIR}/kai_fire_{session_id}.json
 ```
 
-5. Print a structured report in EXACTLY this format (the backend parses it):
-
+## Step 4 — Print report
+Print EXACTLY this structure (the backend parses it):
 ```
 ===FIRE_REPORT_START===
-{{
-  "session_id": "<session_id>",
-  "goal": "{goal}",
-  "turns_completed": N,
-  "turns": [
-    {{
-      "turn_number": 1,
-      "user_message": "...",
-      "assistant_response_preview": "first 300 chars...",
-      "status": "input-required",
-      "ttfb_ms": N,
-      "total_ms": N,
-      "eval": {{"relevance": N, "accuracy": N, "helpfulness": N, "tool_usage": N}}
-    }}
-  ],
-  "evaluation": {{
-    "goal_achievement": N,
-    "context_retention": N,
-    "error_handling": N,
-    "response_quality": N,
-    "overall_score": N.N,
-    "summary": "2-3 sentence assessment",
-    "issues": ["issue 1", "issue 2"]
-  }}
-}}
+{{"session_id": "{session_id}", "goal": "{goal}", "turns_completed": N, "turns": [{{"turn_number": 1, "user_message": "...", "assistant_response_preview": "first 300 chars...", "status": "input-required", "ttfb_ms": N, "total_ms": N, "eval": {{"relevance": N, "accuracy": N, "helpfulness": N, "tool_usage": N}}}}], "evaluation": {{"goal_achievement": N, "context_retention": N, "error_handling": N, "response_quality": N, "overall_score": N.N, "summary": "2-3 sentence assessment", "issues": ["issue 1"]}}}}
 ===FIRE_REPORT_END===
 ```
 
-## Scoring Rubric (use these when evaluating)
-- Relevance 1-5: Does the response address the question?
-- Accuracy 1-5: Is the information correct? No hallucinations?
-- Helpfulness 1-5: Is it actionable and useful?
-- Tool Usage 1-5: Did Kai use appropriate tools? (3 if N/A)
+## Scoring (1-5 each)
+- Relevance: Does the response address the question?
+- Accuracy: Is the information correct? No hallucinations?
+- Helpfulness: Is it actionable and useful?
+- Tool Usage: Did Kai use appropriate tools? (3 if N/A)
 
-## Rules
+## CRITICAL RULES
+- ONLY run the 3 commands above (start, round, end). Do NOT run cat, ls, grep, or any other command.
 - Do NOT stop or ask questions. Run everything autonomously.
-- Use --env flag always.
-- If a turn errors, note it and continue to the next.
-- If auth fails on start, print the error and stop.
-- Print the ===FIRE_REPORT_START=== / ===FIRE_REPORT_END=== block at the very end.
+- Use --env flag always. Auth is pre-configured — do not inspect or modify credentials.
+- If auth fails on start, print the error in the report and stop.
+- You MUST print ===FIRE_REPORT_START=== / ===FIRE_REPORT_END=== at the very end.
 """
 
 
@@ -128,14 +102,38 @@ async def run_fire_session(
         "--output-format", "stream-json",
         "--verbose",
         "--model", model,
-        "--max-turns", str(max_turns + 5),  # extra headroom for tool calls
+        "--max-turns", str(max_turns * 3 + 10),  # each round = ~2 turns (tool_use + result), plus start/end/report
     ]
+
+    # Build env vars so kai_conversation.py --env uses the active profile
+    env = get_active_env()
+    creds = env.get("credentials", {})
+    subprocess_env = dict(os.environ)
+    # Allow spawning Claude CLI even when running inside another Claude Code session
+    # Strip Claude Code session vars so spawned CLI uses subscription auth
+    subprocess_env.pop("CLAUDECODE", None)
+    subprocess_env.pop("ANTHROPIC_API_KEY", None)
+    subprocess_env.update({
+        "TESTOPS_EMAIL": creds.get("email", ""),
+        "TESTOPS_PASSWORD": creds.get("password", ""),
+        "TESTOPS_ACCOUNT": creds.get("account", ""),
+        "KAI_BASE_URL": env.get("base_url", ""),
+        "KAI_LOGIN_URL": env.get("login_url", ""),
+        "KAI_PLATFORM_URL": env.get("platform_url", ""),
+        "KAI_PROJECT_ID": env.get("project_id", ""),
+        "KAI_ORG_ID": env.get("org_id", ""),
+        "KAI_ACCOUNT_ID": env.get("account_id", ""),
+        "KAI_PROJECT_NAME": env.get("project_name", ""),
+        "KAI_ACCOUNT_NAME": env.get("account_name", ""),
+    })
+    logger.info(f"Fire {session_id}: using env profile base_url={env.get('base_url')} project={env.get('project_id')}")
 
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=subprocess_env,
         )
 
         full_output = []
@@ -157,56 +155,66 @@ async def run_fire_session(
 
             event_type = event.get("type", "")
             if event_type not in ("rate_limit_event",):
-                logger.info(f"Fire {session_id}: event type={event_type} msg_type={event.get('message',{}).get('type','?') if isinstance(event.get('message'), dict) else '?'} keys={list(event.keys())[:6]}")
+                msg = event.get("message", {})
+                if isinstance(msg, dict):
+                    msg_type = msg.get("type", "?")
+                    # Log content structure for assistant messages
+                    content = msg.get("content", [])
+                    content_types = [c.get("type", "?") if isinstance(c, dict) else type(c).__name__ for c in content] if isinstance(content, list) else [type(content).__name__]
+                    logger.info(f"Fire {session_id}: event={event_type} msg_type={msg_type} content_types={content_types[:3]}")
+                else:
+                    logger.info(f"Fire {session_id}: event={event_type}")
 
             # Forward meaningful events to frontend
-            # Handle both old and new (--verbose) stream-json formats
+            # Verbose stream-json format: event.message.content[] has typed items
             if event_type == "assistant" and "message" in event:
-                msg = event["message"]
-                msg_type = msg.get("type", "") if isinstance(msg, dict) else ""
-                if msg_type == "text":
-                    text_chunk = msg.get("content", "")
-                    if text_chunk:
-                        current_text += text_chunk
-                        if on_event:
-                            await _safe_callback(on_event, session_id, {
-                                "type": "fire_text",
-                                "content": text_chunk,
-                            })
-                elif msg_type == "tool_use":
-                    tool_name = msg.get("name", "")
-                    tool_input = msg.get("input", {})
+                msg = event.get("message", {})
+                content_items = msg.get("content", []) if isinstance(msg, dict) else []
+                if isinstance(content_items, list):
+                    for item in content_items:
+                        if not isinstance(item, dict):
+                            continue
+                        item_type = item.get("type", "")
+                        if item_type == "text":
+                            text_chunk = item.get("text", "")
+                            if text_chunk:
+                                current_text += text_chunk
+                                if on_event:
+                                    await _safe_callback(on_event, session_id, {
+                                        "type": "fire_text",
+                                        "content": text_chunk,
+                                    })
+                        elif item_type == "tool_use":
+                            if on_event:
+                                await _safe_callback(on_event, session_id, {
+                                    "type": "fire_tool_call",
+                                    "tool": item.get("name", ""),
+                                    "input_preview": str(item.get("input", {}))[:500],
+                                })
+                elif isinstance(content_items, str) and content_items:
+                    # Old format fallback
+                    current_text += content_items
                     if on_event:
                         await _safe_callback(on_event, session_id, {
-                            "type": "fire_tool_call",
-                            "tool": tool_name,
-                            "input_preview": str(tool_input)[:500],
-                        })
-                elif msg_type == "tool_result":
-                    content = msg.get("content", "")
-                    if on_event:
-                        await _safe_callback(on_event, session_id, {
-                            "type": "fire_tool_result",
-                            "content_preview": str(content)[:1000],
+                            "type": "fire_text",
+                            "content": content_items,
                         })
 
-            elif event_type == "tool_use":
-                tool_name = event.get("name", "")
-                tool_input = event.get("input", {})
-                if on_event:
-                    await _safe_callback(on_event, session_id, {
-                        "type": "fire_tool_call",
-                        "tool": tool_name,
-                        "input_preview": str(tool_input)[:500],
-                    })
-
-            elif event_type == "tool_result":
-                content = event.get("content", "")
-                if on_event:
-                    await _safe_callback(on_event, session_id, {
-                        "type": "fire_tool_result",
-                        "content_preview": str(content)[:1000],
-                    })
+            elif event_type == "user" and "message" in event:
+                msg = event.get("message", {})
+                content_items = msg.get("content", []) if isinstance(msg, dict) else []
+                if isinstance(content_items, list):
+                    for item in content_items:
+                        if not isinstance(item, dict):
+                            continue
+                        item_type = item.get("type", "")
+                        if item_type == "tool_result":
+                            content = item.get("content", "")
+                            if on_event:
+                                await _safe_callback(on_event, session_id, {
+                                    "type": "fire_tool_result",
+                                    "content_preview": str(content)[:1000],
+                                })
 
             elif event_type == "result":
                 result_text = event.get("result", "")
@@ -260,18 +268,30 @@ async def run_fire_session(
 
 def _extract_fire_report(output: str) -> Optional[dict]:
     """Extract the structured JSON report from Claude's output."""
-    # Try to find the report block markers
-    # Look through all stream-json lines for the result content
+    # Look through all stream-json lines for the result or final assistant text
+    all_text_parts = []
     for line in output.split("\n"):
         try:
             event = json.loads(line)
             if event.get("type") == "result":
                 result_text = event.get("result", "")
-                return _parse_report_text(result_text)
+                report = _parse_report_text(result_text)
+                if report:
+                    return report
+            # Also collect text from assistant messages (verbose format)
+            if event.get("type") == "assistant":
+                msg = event.get("message", {})
+                for item in (msg.get("content", []) if isinstance(msg, dict) else []):
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        all_text_parts.append(item.get("text", ""))
         except json.JSONDecodeError:
             continue
 
-    # Fallback: try to find markers in raw output
+    # Fallback: try to find markers in collected text or raw output
+    if all_text_parts:
+        report = _parse_report_text("\n".join(all_text_parts))
+        if report:
+            return report
     return _parse_report_text(output)
 
 

@@ -12,3 +12,6 @@ matches/
 web/kai_tests.db
 web/frontend/node_modules/
 web/frontend/dist/
+scripts/.token_cache/
+scripts/data/
+web/data/

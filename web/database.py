@@ -128,6 +128,11 @@ def init_db():
             conn.execute("SELECT env_key FROM matches LIMIT 1")
         except sqlite3.OperationalError:
             conn.execute("ALTER TABLE matches ADD COLUMN env_key TEXT DEFAULT 'production'")
+        # Add env_info JSON column to sessions (stores full env details at creation time)
+        try:
+            conn.execute("SELECT env_info FROM sessions LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE sessions ADD COLUMN env_info TEXT DEFAULT '{}'")
 
 
 # ── Matches ──────────────────────────────────────────────────────
@@ -252,12 +257,13 @@ def delete_match(match_id: str):
 def create_session(session_id: str, actor_mode: str, goal: str = None,
                    scenario_id: str = None, max_turns: int = 10,
                    max_time_s: float = 600, match_id: str = None,
-                   env_key: str = "production") -> dict:
+                   env_key: str = "production", env_info: dict = None) -> dict:
     with get_conn() as conn:
         conn.execute(
-            """INSERT INTO sessions (id, actor_mode, goal, scenario_id, max_turns, max_time_s, match_id, env_key, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
-            (session_id, actor_mode, goal, scenario_id, max_turns, max_time_s, match_id, env_key),
+            """INSERT INTO sessions (id, actor_mode, goal, scenario_id, max_turns, max_time_s, match_id, env_key, env_info, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+            (session_id, actor_mode, goal, scenario_id, max_turns, max_time_s, match_id, env_key,
+             json.dumps(env_info or {})),
         )
     return get_session(session_id)
 
@@ -267,7 +273,13 @@ def get_session(session_id: str) -> Optional[dict]:
         row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
             return None
-        return dict(row)
+        d = dict(row)
+        if isinstance(d.get("env_info"), str):
+            try:
+                d["env_info"] = json.loads(d["env_info"])
+            except (json.JSONDecodeError, TypeError):
+                d["env_info"] = {}
+        return d
 
 
 def update_session(session_id: str, **kwargs):
@@ -390,61 +402,78 @@ def get_evaluation(session_id: str) -> Optional[dict]:
 
 # ── Reports / Analytics ──────────────────────────────────────────
 
-def get_report_data() -> dict:
-    """Get aggregate data for the reports dashboard."""
+def get_report_data(ring: str = None) -> dict:
+    """Get aggregate data for the reports dashboard, optionally filtered by ring."""
     with get_conn() as conn:
+        # Ring filter clause for sessions
+        ring_clause = ""
+        ring_params = []
+        if ring and ring != "all":
+            ring_clause = " WHERE COALESCE(s.env_key, 'production') = ?"
+            ring_params = [ring]
+
         sessions = conn.execute(
-            "SELECT * FROM sessions ORDER BY created_at DESC"
+            "SELECT * FROM sessions s" + ring_clause + " ORDER BY s.created_at DESC",
+            ring_params
         ).fetchall()
         sessions = [dict(r) for r in sessions]
+        session_ids = [s["id"] for s in sessions]
 
-        # Aggregate latency stats
-        stats = conn.execute("""
-            SELECT
-                COUNT(*) as total_turns,
-                AVG(ttfb_ms) as avg_ttfb,
-                AVG(total_ms) as avg_total,
-                MAX(ttfb_ms) as max_ttfb,
-                MAX(total_ms) as max_total,
-                MIN(ttfb_ms) as min_ttfb,
-                MIN(total_ms) as min_total,
-                AVG(poll_count) as avg_polls
-            FROM turns WHERE ttfb_ms > 0
-        """).fetchone()
+        # Aggregate latency stats (filtered by ring sessions)
+        if session_ids:
+            placeholders = ",".join("?" * len(session_ids))
+            stats = conn.execute(f"""
+                SELECT
+                    COUNT(*) as total_turns,
+                    AVG(ttfb_ms) as avg_ttfb,
+                    AVG(total_ms) as avg_total,
+                    MAX(ttfb_ms) as max_ttfb,
+                    MAX(total_ms) as max_total,
+                    MIN(ttfb_ms) as min_ttfb,
+                    MIN(total_ms) as min_total,
+                    AVG(poll_count) as avg_polls
+                FROM turns WHERE ttfb_ms > 0 AND session_id IN ({placeholders})
+            """, session_ids).fetchone()
 
-        # Per-mode stats
-        mode_stats = conn.execute("""
-            SELECT
-                s.actor_mode,
-                COUNT(DISTINCT s.id) as session_count,
-                AVG(t.total_ms) as avg_total_ms,
-                AVG(t.ttfb_ms) as avg_ttfb_ms
-            FROM sessions s
-            LEFT JOIN turns t ON s.id = t.session_id AND t.ttfb_ms > 0
-            GROUP BY s.actor_mode
-        """).fetchall()
+            # Per-mode stats
+            mode_stats = conn.execute(f"""
+                SELECT
+                    s.actor_mode,
+                    COUNT(DISTINCT s.id) as session_count,
+                    AVG(t.total_ms) as avg_total_ms,
+                    AVG(t.ttfb_ms) as avg_ttfb_ms
+                FROM sessions s
+                LEFT JOIN turns t ON s.id = t.session_id AND t.ttfb_ms > 0
+                WHERE s.id IN ({placeholders})
+                GROUP BY s.actor_mode
+            """, session_ids).fetchall()
 
-        # Evaluation averages
-        eval_stats = conn.execute("""
-            SELECT
-                AVG(goal_achievement) as avg_goal,
-                AVG(context_retention) as avg_context,
-                AVG(error_handling) as avg_error,
-                AVG(response_quality) as avg_quality,
-                AVG(overall_score) as avg_overall
-            FROM evaluations
-        """).fetchone()
+            # Evaluation averages
+            eval_stats = conn.execute(f"""
+                SELECT
+                    AVG(goal_achievement) as avg_goal,
+                    AVG(context_retention) as avg_context,
+                    AVG(error_handling) as avg_error,
+                    AVG(response_quality) as avg_quality,
+                    AVG(overall_score) as avg_overall
+                FROM evaluations WHERE session_id IN ({placeholders})
+            """, session_ids).fetchone()
 
-        # Recent turns for latency trend
-        latency_trend = conn.execute("""
-            SELECT t.session_id, t.turn_number, t.ttfb_ms, t.total_ms, t.timestamp
-            FROM turns t
-            WHERE t.ttfb_ms > 0
-            ORDER BY t.timestamp DESC
-            LIMIT 100
-        """).fetchall()
+            # Recent turns for latency trend
+            latency_trend = conn.execute(f"""
+                SELECT t.session_id, t.turn_number, t.ttfb_ms, t.total_ms, t.timestamp
+                FROM turns t
+                WHERE t.ttfb_ms > 0 AND t.session_id IN ({placeholders})
+                ORDER BY t.timestamp DESC
+                LIMIT 100
+            """, session_ids).fetchall()
+        else:
+            stats = None
+            mode_stats = []
+            eval_stats = None
+            latency_trend = []
 
-        # Per-environment (ring) stats
+        # Per-environment (ring) stats — always unfiltered for ring tabs
         env_stats = conn.execute("""
             SELECT
                 COALESCE(s.env_key, 'production') as env_key,
@@ -464,6 +493,65 @@ def get_report_data() -> dict:
             GROUP BY COALESCE(s.env_key, 'production')
         """).fetchall()
 
+        # Per-ring breakdowns for comparison (only when viewing all rings)
+        by_mode_by_ring = {}
+        evals_by_ring = {}
+        trend_by_ring = {}
+        if not ring or ring == "all":
+            # Mode stats per ring
+            mode_ring_rows = conn.execute("""
+                SELECT
+                    COALESCE(s.env_key, 'production') as env_key,
+                    s.actor_mode,
+                    COUNT(DISTINCT s.id) as session_count,
+                    AVG(t.total_ms) as avg_total_ms,
+                    AVG(t.ttfb_ms) as avg_ttfb_ms
+                FROM sessions s
+                LEFT JOIN turns t ON s.id = t.session_id AND t.ttfb_ms > 0
+                GROUP BY COALESCE(s.env_key, 'production'), s.actor_mode
+            """).fetchall()
+            for r in mode_ring_rows:
+                rd = dict(r)
+                rk = rd.pop("env_key")
+                by_mode_by_ring.setdefault(rk, []).append(rd)
+
+            # Eval averages per ring
+            eval_ring_rows = conn.execute("""
+                SELECT
+                    COALESCE(s.env_key, 'production') as env_key,
+                    AVG(e.goal_achievement) as avg_goal,
+                    AVG(e.context_retention) as avg_context,
+                    AVG(e.error_handling) as avg_error,
+                    AVG(e.response_quality) as avg_quality,
+                    AVG(e.overall_score) as avg_overall
+                FROM evaluations e
+                JOIN sessions s ON s.id = e.session_id
+                GROUP BY COALESCE(s.env_key, 'production')
+            """).fetchall()
+            for r in eval_ring_rows:
+                rd = dict(r)
+                rk = rd.pop("env_key")
+                evals_by_ring[rk] = rd
+
+            # Latency trend per ring
+            trend_ring_rows = conn.execute("""
+                SELECT
+                    COALESCE(s.env_key, 'production') as env_key,
+                    t.session_id, t.turn_number, t.ttfb_ms, t.total_ms, t.timestamp
+                FROM turns t
+                JOIN sessions s ON s.id = t.session_id
+                WHERE t.ttfb_ms > 0
+                ORDER BY t.timestamp DESC
+                LIMIT 200
+            """).fetchall()
+            for r in trend_ring_rows:
+                rd = dict(r)
+                rk = rd.pop("env_key")
+                trend_by_ring.setdefault(rk, []).append(rd)
+            # Limit each ring to 100
+            for rk in trend_by_ring:
+                trend_by_ring[rk] = trend_by_ring[rk][:100]
+
         return {
             "sessions": sessions,
             "latency": dict(stats) if stats else {},
@@ -471,4 +559,124 @@ def get_report_data() -> dict:
             "evaluations": dict(eval_stats) if eval_stats else {},
             "latency_trend": [dict(r) for r in latency_trend],
             "by_ring": [dict(r) for r in env_stats],
+            "by_mode_by_ring": by_mode_by_ring,
+            "evals_by_ring": evals_by_ring,
+            "trend_by_ring": trend_by_ring,
+        }
+
+
+def get_match_trends(ring: str = None) -> dict:
+    """Get match-level trends over time for regression analysis.
+
+    Returns per-match, per-category aggregated metrics ordered by time.
+    """
+    with get_conn() as conn:
+        ring_clause = ""
+        ring_params = []
+        if ring:
+            ring_clause = " AND COALESCE(m.env_key, 'production') = ?"
+            ring_params = [ring]
+
+        # All completed/error matches ordered by time
+        matches = conn.execute(
+            """SELECT m.id, m.name, m.category, m.env_key, m.status,
+                      m.overall_score, m.pass_rate, m.created_at, m.ended_at
+               FROM matches m
+               WHERE m.status IN ('completed', 'error')""" + ring_clause + """
+               ORDER BY m.created_at ASC""",
+            ring_params,
+        ).fetchall()
+        matches = [dict(r) for r in matches]
+
+        if not matches:
+            return {"matches": [], "categories": [], "trends": [], "rings": []}
+
+        match_ids = [m["id"] for m in matches]
+        placeholders = ",".join("?" * len(match_ids))
+
+        # Per-session data with scenario category extracted from scenarios
+        # scenario_id maps to a category — we need to look it up
+        rows = conn.execute(f"""
+            SELECT
+                s.match_id,
+                s.scenario_id,
+                s.status,
+                COALESCE(t.avg_ttfb_ms, 0) as avg_ttfb_ms,
+                COALESCE(t.avg_total_ms, 0) as avg_total_ms,
+                e.overall_score,
+                e.goal_achievement,
+                e.context_retention,
+                e.error_handling,
+                e.response_quality
+            FROM sessions s
+            LEFT JOIN (
+                SELECT session_id,
+                       ROUND(AVG(CASE WHEN ttfb_ms > 0 THEN ttfb_ms END), 1) as avg_ttfb_ms,
+                       ROUND(AVG(CASE WHEN total_ms > 0 THEN total_ms END), 1) as avg_total_ms
+                FROM turns GROUP BY session_id
+            ) t ON t.session_id = s.id
+            LEFT JOIN evaluations e ON e.session_id = s.id
+            WHERE s.match_id IN ({placeholders})
+            ORDER BY s.created_at
+        """, match_ids).fetchall()
+
+        # Build scenario → category map from the session_runner scenarios
+        scenario_map = {}
+        try:
+            import sys, os
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from session_runner import get_fixed_scenarios
+            for sc in get_fixed_scenarios():
+                scenario_map[sc["id"]] = sc["category"]
+        except Exception:
+            pass
+
+        # Aggregate per match, per category
+        from collections import defaultdict
+        match_cat_data = defaultdict(lambda: defaultdict(list))
+        for r in rows:
+            rd = dict(r)
+            cat = scenario_map.get(rd["scenario_id"], "other")
+            match_cat_data[rd["match_id"]][cat].append(rd)
+
+        # Build trend rows: one entry per match with per-category metrics
+        trends = []
+        all_categories = set()
+        for m in matches:
+            entry = {
+                "match_id": m["id"],
+                "match_name": m["name"] or m["id"][:8],
+                "created_at": m["created_at"],
+                "overall_score": m["overall_score"],
+                "pass_rate": m["pass_rate"],
+                "categories": {},
+            }
+            cats = match_cat_data.get(m["id"], {})
+            for cat, sessions_list in cats.items():
+                all_categories.add(cat)
+                completed = [s for s in sessions_list if s["status"] == "completed"]
+                scored = [s for s in sessions_list if s["overall_score"] is not None]
+                entry["categories"][cat] = {
+                    "total": len(sessions_list),
+                    "passed": len(completed),
+                    "pass_rate": len(completed) / len(sessions_list) if sessions_list else 0,
+                    "avg_score": round(sum(s["overall_score"] for s in scored) / len(scored), 2) if scored else None,
+                    "avg_goal": round(sum(s["goal_achievement"] for s in scored if s["goal_achievement"]) / max(len([s for s in scored if s["goal_achievement"]]), 1), 2) if scored else None,
+                    "avg_context": round(sum(s["context_retention"] for s in scored if s["context_retention"]) / max(len([s for s in scored if s["context_retention"]]), 1), 2) if scored else None,
+                    "avg_quality": round(sum(s["response_quality"] for s in scored if s["response_quality"]) / max(len([s for s in scored if s["response_quality"]]), 1), 2) if scored else None,
+                    "avg_ttfb_ms": round(sum(s["avg_ttfb_ms"] for s in sessions_list) / len(sessions_list), 1) if sessions_list else 0,
+                    "avg_total_ms": round(sum(s["avg_total_ms"] for s in sessions_list) / len(sessions_list), 1) if sessions_list else 0,
+                }
+            trends.append(entry)
+
+        # Available rings
+        ring_rows = conn.execute(
+            "SELECT DISTINCT COALESCE(env_key, 'production') as env_key FROM matches WHERE status IN ('completed', 'error')"
+        ).fetchall()
+
+        return {
+            "matches": matches,
+            "categories": sorted(all_categories),
+            "trends": trends,
+            "rings": [r["env_key"] for r in ring_rows],
         }

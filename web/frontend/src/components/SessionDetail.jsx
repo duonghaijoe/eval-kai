@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Timer, Zap, Activity, Award, MessageSquare, BarChart3, AlertTriangle, Terminal, User, Bot } from 'lucide-react'
+import { useParams, Link, useNavigate } from 'react-router-dom'
+import { ArrowLeft, Timer, Zap, Activity, Award, MessageSquare, BarChart3, AlertTriangle, Terminal, User, Bot, Clock, RotateCcw } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getSession, connectWebSocket } from '../api'
+import { getSession, connectWebSocket, startSession } from '../api'
 
 function ScoreDisplay({ value, max = 5 }) {
   if (value == null) return <span style={{ color: 'var(--text-muted)' }}>-</span>
@@ -26,9 +26,11 @@ export default function SessionDetail() {
   const [fireLog, setFireLog] = useState([])
   const [loading, setLoading] = useState(true)
   const [autoScroll, setAutoScroll] = useState(false)
+  const [rematching, setRematchning] = useState(false)
   const conversationEndRef = useRef(null)
   const conversationContainerRef = useRef(null)
   const wsRef = useRef(null)
+  const navigate = useNavigate()
 
   const load = async () => {
     try {
@@ -82,6 +84,26 @@ export default function SessionDetail() {
   if (!session) return <div className="empty">Round not found</div>
 
   const isRunning = session.status === 'running'
+  const isDone = session.status === 'completed' || session.status === 'error'
+
+  const handleRematch = async () => {
+    setRematchning(true)
+    try {
+      const res = await startSession({
+        actorMode: session.actor_mode,
+        goal: session.goal || session.scenario_id,
+        scenarioId: session.scenario_id || undefined,
+        maxTurns: session.max_turns,
+        maxTimeS: session.max_time_s || 600,
+        evalModel: session.eval_model,
+      })
+      navigate(`/sessions/${res.session_id}`)
+    } catch (err) {
+      alert('Rematch failed: ' + err.message)
+    } finally {
+      setRematchning(false)
+    }
+  }
   const allTurns = turns.length > 0 ? turns : liveTurns.filter(t => !t.pending)
 
   const ttfbs = allTurns.filter(t => t.ttfb_ms > 0).map(t => t.ttfb_ms)
@@ -115,6 +137,12 @@ export default function SessionDetail() {
             <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
             Auto-scroll
           </label>
+          {isDone && (
+            <button onClick={handleRematch} disabled={rematching} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+              {rematching ? <span className="spinner" /> : <RotateCcw size={14} />}
+              Rematch
+            </button>
+          )}
           <Link to="/sessions"><button><ArrowLeft size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />Back to Rounds</button></Link>
         </div>
       </div>
@@ -133,7 +161,7 @@ export default function SessionDetail() {
             <Timer size={18} style={{ color: 'var(--blue)' }} />
             {formatMs(avgTtfb)}
           </div>
-          <div className="stat-label">Avg TTFB</div>
+          <div className="stat-label">Avg TTFT</div>
         </div>
         <div className="card">
           <div className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -150,6 +178,41 @@ export default function SessionDetail() {
           <div className="stat-label">Overall Score</div>
         </div>
       </div>
+
+      {/* Fighter Cards */}
+      {(() => {
+        const env = session.env_info || {}
+        return (
+          <div className="grid grid-2">
+            <div className="card" style={{ borderLeft: '3px solid var(--accent)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.4rem' }}>
+                <User size={14} style={{ color: 'var(--accent)' }} />
+                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Joe</span>
+                <span className={`badge ${session.actor_mode}`} style={{ fontSize: '0.55rem' }}>{session.actor_mode}</span>
+              </div>
+              <div style={{ fontSize: '0.73rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+                <span><strong>Engine:</strong> Claude {(env.joe_model || 'sonnet').replace(/^./, c => c.toUpperCase())}</span>
+                <span><strong>Style:</strong> {session.actor_mode === 'fire' ? 'Autonomous (full session)' : session.actor_mode === 'explore' ? 'Adaptive (AI-driven)' : session.actor_mode === 'hybrid' ? 'Mixed (plan + adapt)' : 'Scripted (fixed steps)'}</span>
+                <span><strong>Max Rounds:</strong> {session.max_turns}</span>
+              </div>
+            </div>
+            <div className="card" style={{ borderLeft: '3px solid var(--green)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.4rem' }}>
+                <Bot size={14} style={{ color: 'var(--green)' }} />
+                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Kai</span>
+                <span className={`badge ${session.env_key === 'staging' ? 'pending' : 'completed'}`} style={{ fontSize: '0.55rem' }}>
+                  {(session.env_key || 'production').replace(/^\w/, c => c.toUpperCase())}
+                </span>
+              </div>
+              <div style={{ fontSize: '0.73rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+                <span><strong>API:</strong> {env.base_url || 'N/A'}</span>
+                <span><strong>Project:</strong> {env.project_name || 'N/A'} {env.project_id ? `(${env.project_id})` : ''}</span>
+                <span><strong>Account:</strong> {env.account_name || 'N/A'}</span>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Fire mode live log */}
       {fireLog.length > 0 && session.actor_mode === 'fire' && isRunning && (
@@ -183,8 +246,13 @@ export default function SessionDetail() {
           {allTurns.map((t, i) => (
             <div key={i}>
               <div className="message user">
-                <div className="message-header">
+                <div className="message-header" style={{ display: 'flex', alignItems: 'center' }}>
                   <User size={10} /> Exchange {t.turn_number} — Joe
+                  {t.timestamp && (
+                    <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 400, display: 'inline-flex', alignItems: 'center', gap: '0.15rem' }}>
+                      <Clock size={8} /> {new Date(t.timestamp).toLocaleTimeString()}
+                    </span>
+                  )}
                 </div>
                 {t.user_message}
               </div>
@@ -197,7 +265,7 @@ export default function SessionDetail() {
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{t.assistant_response}</ReactMarkdown>
                   </div>
                   <div className="meta">
-                    <span><Timer size={10} style={{ verticalAlign: 'middle' }} /> TTFB: {formatMs(t.ttfb_ms)}</span>
+                    <span><Timer size={10} style={{ verticalAlign: 'middle' }} /> TTFT: {formatMs(t.ttfb_ms)}</span>
                     <span><Zap size={10} style={{ verticalAlign: 'middle' }} /> Total: {formatMs(t.total_ms)}</span>
                     <span>Polls: {t.poll_count}</span>
                     {t.tool_calls?.length > 0 && <span>Tools: {(typeof t.tool_calls === 'string' ? JSON.parse(t.tool_calls) : t.tool_calls).map(tc => typeof tc === 'object' ? tc.name : tc).join(', ')}</span>}
@@ -313,7 +381,7 @@ export default function SessionDetail() {
               <tr>
                 <th>#</th>
                 <th>Status</th>
-                <th>TTFB</th>
+                <th>TTFT</th>
                 <th>Total</th>
                 <th>Polls</th>
                 <th>Rel</th>

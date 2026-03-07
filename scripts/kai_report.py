@@ -256,7 +256,7 @@ def generate_html_report(session_data: dict, evaluation: Optional[dict] = None) 
         <p class="bench-subtitle">Kai vs market leaders for complex agentic queries (tool execution + reasoning)</p>
         <div class="bench-grid">
             <div class="bench-card">
-                <div class="bench-metric">First Response (TTFB)</div>
+                <div class="bench-metric">First Response (TTFT)</div>
                 <div class="bench-detail">How fast Kai starts responding after you send a message</div>
                 <div class="bench-value">{avg(ttfbs)}ms</div>
                 <div class="bench-grade" style="background:{ttfb_grade['color']}20;color:{ttfb_grade['color']}">{ttfb_grade['label']} ({ttfb_grade['score']}/5)</div>
@@ -296,7 +296,7 @@ def generate_html_report(session_data: dict, evaluation: Optional[dict] = None) 
             <tbody>{comp_rows}</tbody>
         </table>
         <div class="bench-note">
-            <strong>Methodology:</strong> TTFB thresholds from Nielsen Norman Group perception research &amp; Google UX benchmarks.
+            <strong>Methodology:</strong> TTFT thresholds from Nielsen Norman Group perception research &amp; Google UX benchmarks.
             Total response thresholds calibrated for agentic AI with tool execution (not simple chatbots).
             Competitor numbers from Artificial Analysis, public benchmarks, and enterprise reports (2025-2026).
         </div>

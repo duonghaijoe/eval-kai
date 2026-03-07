@@ -5,6 +5,7 @@ Calls `claude -p "prompt" --output-format json` for each decision.
 """
 import json
 import logging
+import os
 import asyncio
 import subprocess
 from typing import Optional
@@ -36,11 +37,14 @@ def _call_claude(prompt: str, model: str = None, max_tokens: int = 1024) -> str:
     ]
     logger.debug(f"Calling claude CLI: model={model or TURN_MODEL} prompt_len={len(prompt)}")
     try:
+        # Strip CLAUDECODE env var to allow spawning inside a Claude Code session
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=120,
+            env=env,
         )
         if result.returncode != 0:
             logger.warning(f"Claude CLI error (rc={result.returncode}): {result.stderr[:500]}")
@@ -65,7 +69,8 @@ class ActorBrain:
     def __init__(self):
         # Verify claude CLI is available
         try:
-            result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
+            env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
+            result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10, env=env)
             if result.returncode == 0:
                 logger.info(f"Claude CLI available: {result.stdout.strip()}")
             else:
@@ -215,7 +220,7 @@ Return ONLY valid JSON, no markdown:
             ttfb = t.get('ttfb_ms', 0)
             total = t.get('total_ms', 0)
             if ttfb or total:
-                transcript += f"Latency: TTFB={ttfb:.0f}ms, Total={total:.0f}ms\n"
+                transcript += f"Latency: TTFT={ttfb:.0f}ms, Total={total:.0f}ms\n"
 
         # Compute latency summary
         ttfbs = [t.get('ttfb_ms', 0) for t in turns if t.get('ttfb_ms', 0) > 0]
@@ -224,7 +229,7 @@ Return ONLY valid JSON, no markdown:
         if ttfbs:
             latency_summary = f"""
 Latency Summary:
-- Avg TTFB: {sum(ttfbs)/len(ttfbs):.0f}ms, Max: {max(ttfbs):.0f}ms
+- Avg TTFT: {sum(ttfbs)/len(ttfbs):.0f}ms, Max: {max(ttfbs):.0f}ms
 - Avg Total: {sum(totals)/len(totals):.0f}ms, Max: {max(totals):.0f}ms"""
 
         prompt = f"""You are evaluating a test session with Kai (Katalon's AI testing orchestrator).
@@ -285,5 +290,5 @@ Return ONLY valid JSON, no markdown:
                 )
             else:
                 text = str(content)
-            parts.append(f"{'User' if role == 'user' else 'Kai'}: {text[:500]}")
+            parts.append(f"{'User' if role == 'user' else 'Kai'}: {text}")
         return "\n".join(parts)

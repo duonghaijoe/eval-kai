@@ -672,7 +672,7 @@ def main():
             print(f"Duration:  {s['total_duration_ms']:.0f}ms")
             print()
             lat = report["latency"]
-            print(f"TTFB:      avg={lat['ttfb_avg_ms']}ms p95={lat['ttfb_p95_ms']}ms max={lat['ttfb_max_ms']}ms")
+            print(f"TTFT:      avg={lat['ttfb_avg_ms']}ms p95={lat['ttfb_p95_ms']}ms max={lat['ttfb_max_ms']}ms")
             print(f"Total:     avg={lat['total_avg_ms']}ms p95={lat['total_p95_ms']}ms max={lat['total_max_ms']}ms")
             print()
             for cat, stats in report["by_category"].items():
@@ -683,7 +683,7 @@ def main():
                 print(f"  {icon} {sc['id']}: {sc['name']} ({sc['duration_ms']:.0f}ms)")
                 for step in sc["steps"]:
                     step_icon = "✓" if step["passed"] else "✗"
-                    print(f"      {step_icon} {step['name']}: {step['status']} (ttfb={step['ttfb_ms']}ms total={step['total_ms']}ms)")
+                    print(f"      {step_icon} {step['name']}: {step['status']} (ttft={step['ttfb_ms']}ms total={step['total_ms']}ms)")
                     if step.get("response_text"):
                         preview = step["response_text"][:200].replace("\n", " ")
                         print(f"         Response: {preview}...")

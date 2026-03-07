@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, CheckCircle, XCircle, Clock, Layers, BarChart3, AlertTriangle, ExternalLink, Award, Trophy, Target, Brain, Shield, Star } from 'lucide-react'
-import { getMatchReport } from '../api'
+import { useParams, Link, useNavigate } from 'react-router-dom'
+import { ArrowLeft, CheckCircle, XCircle, Clock, Layers, BarChart3, AlertTriangle, ExternalLink, Award, Trophy, Target, Brain, Shield, Star, RotateCcw } from 'lucide-react'
+import { getMatchReport, createMatch } from '../api'
 
 function ScoreDisplay({ value, max = 5 }) {
   if (value == null) return <span style={{ color: 'var(--text-muted)' }}>-</span>
@@ -22,6 +22,8 @@ export default function MatchReport() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [rerunning, setRematchning] = useState(false)
+  const navigate = useNavigate()
 
   const load = async () => {
     try {
@@ -46,7 +48,21 @@ export default function MatchReport() {
 
   const { match, summary, latency, by_category, scenarios } = data
   const isRunning = data.status === 'running'
+  const isDone = !isRunning && (match?.status === 'completed' || match?.status === 'error')
   const passedCount = scenarios.filter(s => s.passed).length
+
+  const handleRematch = async () => {
+    setRematchning(true)
+    try {
+      const res = await createMatch({
+        category: match?.category || null,
+        maxTimeS: match?.max_time_s || 600,
+        evalModel: match?.eval_model,
+      })
+      navigate(`/matches/${res.match_id}`)
+    } catch (e) { alert('Rematch failed: ' + e.message) }
+    finally { setRematchning(false) }
+  }
 
   return (
     <div>
@@ -65,7 +81,15 @@ export default function MatchReport() {
             {isRunning && <span className="spinner" style={{ marginLeft: '0.5rem' }} />}
           </div>
         </div>
-        <Link to="/matches"><button><ArrowLeft size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />Back</button></Link>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {isDone && (
+            <button onClick={handleRematch} disabled={rerunning} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+              {rerunning ? <span className="spinner" /> : <RotateCcw size={14} />}
+              Rematch
+            </button>
+          )}
+          <Link to="/matches"><button><ArrowLeft size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />Back</button></Link>
+        </div>
       </div>
 
       {/* Summary stats */}
@@ -89,7 +113,7 @@ export default function MatchReport() {
             <Clock size={18} style={{ color: 'var(--blue)' }} />
             {formatMs(latency.avg_ttfb)}
           </div>
-          <div className="stat-label">Avg TTFB</div>
+          <div className="stat-label">Avg TTFT</div>
         </div>
         <div className="card">
           <div className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -165,7 +189,7 @@ export default function MatchReport() {
               <th>Scenario</th>
               <th>Status</th>
               <th>Exchanges</th>
-              <th>Avg TTFB</th>
+              <th>Avg TTFT</th>
               <th>Avg Total</th>
               <th>Score</th>
               <th>Round</th>

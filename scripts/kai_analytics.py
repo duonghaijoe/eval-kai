@@ -241,7 +241,7 @@ class KaiAnalytics:
         print("-" * 50)
         if "ttfb" in lat and lat["ttfb"]:
             t = lat["ttfb"]
-            print(f"  TTFB:          avg={t.get('avg',0)}ms  p50={t.get('p50',0)}ms  p95={t.get('p95',0)}ms  max={t.get('max',0)}ms")
+            print(f"  TTFT:          avg={t.get('avg',0)}ms  p50={t.get('p50',0)}ms  p95={t.get('p95',0)}ms  max={t.get('max',0)}ms")
         if "total" in lat and lat["total"]:
             t = lat["total"]
             print(f"  Total:         avg={t.get('avg',0)}ms  p50={t.get('p50',0)}ms  p95={t.get('p95',0)}ms  max={t.get('max',0)}ms")
