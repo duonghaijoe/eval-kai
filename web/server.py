@@ -875,6 +875,8 @@ def get_env_config_endpoint():
 @app.put("/api/env-config")
 def update_env_config(request: dict, user: str = Depends(require_admin)):
     """Update environment config (switch active env, edit env settings, credentials)."""
+    from session_runner import invalidate_client_cache
+    invalidate_client_cache()
     return save_env_config(request)
 
 

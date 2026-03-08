@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT_SESSIONS", "10"))
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
+# Cached instances to avoid re-init overhead per session
+_cached_brain: Optional[ActorBrain] = None
+_cached_kai_client = None
+_cached_env_key: Optional[str] = None
+
 
 def get_semaphore():
     return _semaphore
@@ -34,6 +39,14 @@ def set_max_concurrent(n: int):
     global _semaphore, MAX_CONCURRENT
     MAX_CONCURRENT = n
     _semaphore = asyncio.Semaphore(n)
+
+
+def invalidate_client_cache():
+    """Clear cached KaiClient when env config changes."""
+    global _cached_kai_client, _cached_env_key
+    _cached_kai_client = None
+    _cached_env_key = None
+    logger.info("KaiClient cache invalidated")
 
 
 def get_fixed_scenarios():
@@ -104,8 +117,11 @@ async def _execute_session(
     on_complete: Callable,
     on_error: Callable,
 ):
-    # Create Kai client with active environment config
+    # Reuse cached Kai client if same environment, otherwise create new
+    global _cached_kai_client, _cached_env_key, _cached_brain
+
     env = get_active_env()
+    env_key = env.get("name", "default")
     creds = env.get("credentials", {})
     client_kwargs = dict(
         base_url=env.get("base_url"),
@@ -117,22 +133,30 @@ async def _execute_session(
         account_id=env.get("account_id", ""),
         account_name=env.get("account_name", ""),
     )
-    if creds.get("email") and creds.get("password") and creds.get("account"):
-        # Use credentials from database profile
-        kai_client = await asyncio.to_thread(
-            KaiClient.from_credentials,
-            creds["email"], creds["password"], creds["account"],
-            **client_kwargs,
-        )
-    else:
-        # Fall back to .env file credentials
-        kai_client = await asyncio.to_thread(
-            KaiClient.from_env,
-            **client_kwargs,
-        )
 
-    # Create actor brain for message planning + evaluation
-    brain = ActorBrain()
+    if _cached_kai_client and _cached_env_key == env_key:
+        kai_client = _cached_kai_client
+        logger.info(f"Reusing cached KaiClient for env={env_key}")
+    else:
+        if creds.get("email") and creds.get("password") and creds.get("account"):
+            kai_client = await asyncio.to_thread(
+                KaiClient.from_credentials,
+                creds["email"], creds["password"], creds["account"],
+                **client_kwargs,
+            )
+        else:
+            kai_client = await asyncio.to_thread(
+                KaiClient.from_env,
+                **client_kwargs,
+            )
+        _cached_kai_client = kai_client
+        _cached_env_key = env_key
+        logger.info(f"Created new KaiClient for env={env_key}")
+
+    # Reuse brain singleton (CLI verification only runs once)
+    if _cached_brain is None:
+        _cached_brain = ActorBrain()
+    brain = _cached_brain
 
     # Get messages plan
     messages = []
@@ -266,7 +290,6 @@ async def _execute_session(
         await asyncio.sleep(1)
 
     # Session complete — run overall evaluation
-    kai_client.close()
 
     turns = db.get_turns(session_id)
     session_eval = {}

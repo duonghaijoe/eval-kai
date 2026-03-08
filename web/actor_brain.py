@@ -66,17 +66,21 @@ async def _call_claude_async(prompt: str, model: str = None) -> str:
 class ActorBrain:
     """Uses Claude Code CLI to decide next messages and evaluate Kai's responses."""
 
+    _verified = False
+
     def __init__(self):
-        # Verify claude CLI is available
-        try:
-            env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
-            result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10, env=env)
-            if result.returncode == 0:
-                logger.info(f"Claude CLI available: {result.stdout.strip()}")
-            else:
-                logger.warning(f"Claude CLI check failed: {result.stderr}")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            logger.error("Claude CLI not found or timed out")
+        # Verify claude CLI once (not every session)
+        if not ActorBrain._verified:
+            try:
+                env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "ANTHROPIC_API_KEY")}
+                result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10, env=env)
+                if result.returncode == 0:
+                    logger.info(f"Claude CLI available: {result.stdout.strip()}")
+                    ActorBrain._verified = True
+                else:
+                    logger.warning(f"Claude CLI check failed: {result.stderr}")
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                logger.error("Claude CLI not found or timed out")
 
     async def decide_next_message(
         self,
