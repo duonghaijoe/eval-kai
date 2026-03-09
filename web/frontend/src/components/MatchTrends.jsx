@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { TrendingUp, Target, Brain, Shield, Star, Timer, Zap, Trophy, CheckCircle, ExternalLink, MessageSquare, AlertTriangle, ThumbsUp, ThumbsDown, Loader } from 'lucide-react'
-import { getMatchTrends, analyzeMatchTrends, formatDt, formatDate } from '../api'
+import { getMatchTrends, analyzeMatchTrends, getConfig, formatDt, formatDate, formatMs } from '../api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
 
 const CAT_COLORS = {
@@ -26,10 +26,6 @@ function ScoreDisplay({ value, max = 5 }) {
   return <span className={`score ${cls}`}>{v}/{max}</span>
 }
 
-function formatMs(ms) {
-  if (!ms || ms <= 0) return '-'
-  return `${Math.round(ms)}ms`
-}
 
 export default function MatchTrends() {
   const [data, setData] = useState(null)
@@ -38,13 +34,18 @@ export default function MatchTrends() {
   const [analysis, setAnalysis] = useState(null)
   const [analyzing, setAnalyzing] = useState(false)
 
-  // Initial load to get available rings, then load for selected ring
+  // Default to active env
   useEffect(() => {
+    getConfig().then(d => setRing(d.active_env || 'production')).catch(() => setRing(null))
+  }, [])
+
+  // Load data when ring changes
+  useEffect(() => {
+    if (ring === null) return
     setLoading(true)
     setAnalysis(null)
     getMatchTrends(ring).then(d => {
       setData(d)
-      if (!ring && d.rings?.length > 0) setRing(d.rings[0])
     }).catch(() => {}).finally(() => setLoading(false))
   }, [ring])
 
@@ -410,7 +411,7 @@ export default function MatchTrends() {
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="label" stroke="var(--text-muted)" fontSize={11} angle={-20} textAnchor="end" height={50} />
                   <YAxis stroke="var(--text-muted)" fontSize={11} unit="ms" />
-                  <Tooltip contentStyle={tooltipStyle} formatter={(v) => `${Math.round(v)}ms`} />
+                  <Tooltip contentStyle={tooltipStyle} formatter={(v) => formatMs(v)} />
                   <Legend />
                   {categories.map(cat => (
                     <Line key={cat} type="monotone" dataKey={cat} stroke={catColor(cat)} name={cat} strokeWidth={2} dot={{ r: 4 }} connectNulls />
@@ -426,7 +427,7 @@ export default function MatchTrends() {
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="label" stroke="var(--text-muted)" fontSize={11} angle={-20} textAnchor="end" height={50} />
                   <YAxis stroke="var(--text-muted)" fontSize={11} unit="ms" />
-                  <Tooltip contentStyle={tooltipStyle} formatter={(v) => `${Math.round(v)}ms`} />
+                  <Tooltip contentStyle={tooltipStyle} formatter={(v) => formatMs(v)} />
                   <Legend />
                   {categories.map(cat => (
                     <Line key={cat} type="monotone" dataKey={cat} stroke={catColor(cat)} name={cat} strokeWidth={2} dot={{ r: 4 }} connectNulls />

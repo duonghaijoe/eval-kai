@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { ArrowLeft, CheckCircle, XCircle, Clock, Layers, BarChart3, AlertTriangle, ExternalLink } from 'lucide-react'
-import { getBatchReport } from '../api'
+import { getBatchReport, formatMs } from '../api'
 
 function ScoreDisplay({ value, max = 5 }) {
   if (value == null) return <span style={{ color: 'var(--text-muted)' }}>-</span>
@@ -9,12 +9,6 @@ function ScoreDisplay({ value, max = 5 }) {
   const n = parseFloat(v)
   const cls = n >= 4 ? 'high' : n >= 3 ? 'mid' : 'low'
   return <span className={`score ${cls}`}>{v}/{max}</span>
-}
-
-function formatMs(ms) {
-  if (!ms || ms <= 0) return '-'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
 }
 
 export default function BatchReport() {

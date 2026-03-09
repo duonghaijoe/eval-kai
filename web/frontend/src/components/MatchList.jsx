@@ -1,14 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Trophy, Plus, Trash2, Clock, Timer, Zap, Award, Layers, CheckCircle, XCircle, RotateCcw, Search, X, CheckSquare, Square } from 'lucide-react'
-import { listMatches, deleteMatch, createMatch, bulkDeleteMatches, formatDt } from '../api'
-import { useAdmin } from '../App'
-
-function formatMs(ms) {
-  if (!ms || ms <= 0) return '-'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
+import { listMatches, deleteMatch, createMatch, bulkDeleteMatches, formatDt, formatMs, formatSec } from '../api'
+import { useAdmin } from '../AdminContext'
 
 function ScoreBadge({ value }) {
   if (value == null) return null
@@ -268,7 +262,7 @@ export default function MatchList() {
                 {m.started_at && m.ended_at && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                     <Clock size={12} />
-                    {((new Date(m.ended_at) - new Date(m.started_at)) / 1000).toFixed(0)}s duration
+                    {formatSec((new Date(m.ended_at) - new Date(m.started_at)) / 1000)} duration
                   </div>
                 )}
 

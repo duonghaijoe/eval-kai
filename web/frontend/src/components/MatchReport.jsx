@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle, XCircle, Clock, Layers, BarChart3, AlertTriangle, ExternalLink, Award, Trophy, Target, Brain, Shield, Star, Timer, RotateCcw } from 'lucide-react'
-import { getMatchReport, createMatch } from '../api'
+import { getMatchReport, createMatch, formatMs } from '../api'
 
 function scoreLatencyFromMs(totalMs) {
   if (totalMs == null) return null
@@ -18,12 +18,6 @@ function ScoreDisplay({ value, max = 5 }) {
   const n = parseFloat(v)
   const cls = n >= 4 ? 'high' : n >= 3 ? 'mid' : 'low'
   return <span className={`score ${cls}`}>{v}/{max}</span>
-}
-
-function formatMs(ms) {
-  if (!ms || ms <= 0) return '-'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
 }
 
 export default function MatchReport() {

@@ -28,6 +28,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Retry config for gateway errors (502/503/504)
+MAX_RETRIES = 3
+RETRY_BACKOFF = [2, 5, 10]  # seconds between retries
+RETRYABLE_STATUS = {502, 503, 504}
+
 
 class ConversationStatus(str, Enum):
     WORKING = "working"
@@ -366,7 +371,17 @@ class KaiClient:
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
 
-        self._client = httpx.Client(timeout=300.0, follow_redirects=True)
+        # Increase pool limits for concurrent windows per fighter
+        pool_limits = httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=30,
+        )
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(300.0, connect=30.0),
+            follow_redirects=True,
+            limits=pool_limits,
+        )
 
     def _headers(self, accept: str = "application/json") -> dict:
         return {
@@ -463,6 +478,10 @@ class KaiClient:
         msg_id = str(int(time.time() * 1000))
         analytics = Analytics()
 
+        # Track how many history events existed BEFORE this turn so we only
+        # extract the NEW assistant response, not repeat previous turns.
+        prior_event_count = len(conversation_history) if conversation_history else 0
+
         # Build messages list
         messages = []
         if conversation_history:
@@ -521,7 +540,7 @@ class KaiClient:
         }
 
         if response.status == "working":
-            self._poll_for_completion(thread_id, connect_payload, response, analytics)
+            self._poll_for_completion(thread_id, connect_payload, response, analytics, prior_event_count)
 
         analytics.response_end = time.time()
         analytics.total_ms = (analytics.response_end - analytics.request_start) * 1000
@@ -529,28 +548,46 @@ class KaiClient:
 
         return response
 
+    def _request_with_retry(self, url: str, payload: dict, label: str = "request") -> dict:
+        """POST with retry on gateway errors (502/503/504)."""
+        last_err = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = self._client.post(url, headers=self._headers(), json=payload)
+                if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES:
+                    wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                    logger.warning(f"{label}: {resp.status_code} on attempt {attempt+1}, retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError:
+                raise
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.PoolTimeout) as e:
+                last_err = e
+                if attempt < MAX_RETRIES:
+                    wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                    logger.warning(f"{label}: {type(e).__name__} on attempt {attempt+1}, retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                raise
+        raise last_err or RuntimeError(f"{label}: all retries exhausted")
+
     def _send_run(self, payload: dict, analytics: Analytics) -> dict:
         """POST to /agent/orchestratorAgent/run to start the agent."""
-        resp = self._client.post(
-            f"{self.BASE_URL}/agent/orchestratorAgent/run",
-            headers=self._headers(),
-            json=payload,
+        return self._request_with_retry(
+            f"{self.BASE_URL}/agent/orchestratorAgent/run", payload, label="/run"
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def _connect(self, payload: dict) -> dict:
         """POST to /agent/orchestratorAgent/connect to get conversation state."""
-        resp = self._client.post(
-            f"{self.BASE_URL}/agent/orchestratorAgent/connect",
-            headers=self._headers(),
-            json=payload,
+        return self._request_with_retry(
+            f"{self.BASE_URL}/agent/orchestratorAgent/connect", payload, label="/connect"
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def _poll_for_completion(
-        self, thread_id: str, payload: dict, response: ChatResponse, analytics: Analytics
+        self, thread_id: str, payload: dict, response: ChatResponse, analytics: Analytics,
+        prior_event_count: int = 0,
     ):
         """Poll via /connect until agent completes, capturing response text.
 
@@ -574,11 +611,11 @@ class KaiClient:
                 logger.debug(f"Poll #{analytics.poll_count}: status={status} events={len(history)}")
 
                 if status in (ConversationStatus.INPUT_REQUIRED, "input-required"):
-                    self._extract_response(history, response, analytics)
+                    self._extract_response(history, response, analytics, prior_event_count)
                     break
                 elif status in (ConversationStatus.ERROR, "error"):
                     analytics.error_message = "Agent returned error status"
-                    self._extract_response(history, response, analytics)
+                    self._extract_response(history, response, analytics, prior_event_count)
                     break
                 elif status != ConversationStatus.WORKING and status != "working":
                     break
@@ -588,13 +625,23 @@ class KaiClient:
         analytics.poll_total_ms = (time.time() - poll_start) * 1000
 
     def _extract_response(
-        self, history: list, response: ChatResponse, analytics: Analytics
+        self, history: list, response: ChatResponse, analytics: Analytics,
+        prior_event_count: int = 0,
     ):
-        """Extract assistant reply and tool calls from historyEvents."""
+        """Extract assistant reply and tool calls from historyEvents.
+
+        Only processes NEW events (after prior_event_count) to avoid
+        re-capturing responses from previous turns in multi-turn conversations.
+        """
         response.messages = history
 
-        # Pass 1: Extract ALL tool calls from the history
-        for msg in history:
+        # Only look at events that are NEW in this turn.
+        # The history grows each turn; prior_event_count tells us where old events end.
+        # +1 to also skip the user message we just sent (which is the last prior event).
+        new_events = history[prior_event_count + 1:] if prior_event_count > 0 else history
+
+        # Pass 1: Extract tool calls from NEW events only
+        for msg in new_events:
             role = msg.get("role", "")
             # Tool calls come in role="tool" messages with toolCalls array
             if role == "tool" and "toolCalls" in msg:
@@ -625,9 +672,9 @@ class KaiClient:
                                 timestamp=time.time(),
                             ))
 
-        # Pass 2: Concatenate ALL assistant text from all assistant messages (in order)
+        # Pass 2: Concatenate assistant text from NEW events only (not previous turns)
         all_text_parts = []
-        for msg in history:
+        for msg in new_events:
             if msg.get("role") == "assistant":
                 content = msg.get("content", "")
                 if isinstance(content, str):
@@ -647,7 +694,37 @@ class KaiClient:
         # Also store tool_calls on the response object
         response.tool_calls = analytics.tool_calls
 
-        logger.info(f"Extracted response: {len(response.text)} chars, {len(analytics.tool_calls)} tool calls from {len(history)} events")
+        logger.info(f"Extracted response: {len(response.text)} chars, {len(analytics.tool_calls)} tool calls from {len(new_events)} new events (total history: {len(history)}, prior: {prior_event_count})")
+
+    def wait_for_ready(self, thread_id: str, timeout: float = 60.0) -> str:
+        """Poll /connect until Kai status is 'input-required' (ready for next message).
+
+        Returns the final status. This prevents sending while Kai is still working,
+        which causes 'The request was invalid' errors.
+        """
+        deadline = time.time() + timeout
+        payload = {
+            "threadId": thread_id,
+            "runId": str(uuid.uuid4()),
+            "tools": DEFAULT_TOOLS,
+            "context": [],
+            "forwardedProps": {},
+            "state": {},
+            "messages": [],
+        }
+        while time.time() < deadline:
+            try:
+                data = self._connect(payload)
+                status = data.get("status", "unknown")
+                if status in ("input-required", "error"):
+                    return status
+                if status != "working":
+                    return status
+            except Exception as e:
+                logger.debug(f"wait_for_ready poll error: {e}")
+            time.sleep(2)
+        logger.warning(f"wait_for_ready timed out after {timeout}s for thread {thread_id}")
+        return "timeout"
 
     # ── Cleanup ──────────────────────────────────────────────────────
 

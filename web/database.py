@@ -104,10 +104,56 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS load_test_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                env_key TEXT NOT NULL,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                user_id INTEGER,
+                testops_user_id INTEGER,
+                account_user_id INTEGER,
+                project_user_id INTEGER,
+                license_allocation_id INTEGER,
+                status TEXT DEFAULT 'pending',
+                error TEXT,
+                bearer_token TEXT,
+                token_expires_at TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(env_key, email)
+            );
+
+            CREATE TABLE IF NOT EXISTS superfights (
+                id TEXT PRIMARY KEY,
+                weight_class TEXT NOT NULL,
+                env_key TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                concurrency INTEGER DEFAULT 1,
+                turns_per_fighter INTEGER DEFAULT 3,
+                total_fighters INTEGER DEFAULT 0,
+                completed INTEGER DEFAULT 0,
+                errors INTEGER DEFAULT 0,
+                latency TEXT DEFAULT '{}',
+                auth TEXT DEFAULT '{}',
+                fighters TEXT DEFAULT '[]',
+                sessions_data TEXT DEFAULT '[]',
+                config TEXT DEFAULT '{}',
+                throughput TEXT DEFAULT '{}',
+                quality TEXT DEFAULT '{}',
+                error_rate REAL DEFAULT 0,
+                duration_s REAL DEFAULT 0,
+                started_at TEXT,
+                ended_at TEXT,
+                error TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
             -- Clean up stale running sessions/matches from previous container runs
             UPDATE sessions SET status = 'error', stop_reason = 'server_restart',
                 ended_at = datetime('now') WHERE status IN ('running', 'pending');
             UPDATE matches SET status = 'error', ended_at = datetime('now')
+                WHERE status IN ('running', 'pending');
+            UPDATE superfights SET status = 'error', ended_at = datetime('now')
                 WHERE status IN ('running', 'pending');
         """)
         # Migrations for existing DBs
@@ -138,6 +184,24 @@ def init_db():
             conn.execute("SELECT rubric_weights FROM evaluations LIMIT 1")
         except sqlite3.OperationalError:
             conn.execute("ALTER TABLE evaluations ADD COLUMN rubric_weights TEXT DEFAULT '{}'")
+        # Add testops_user_id and project_user_id to load_test_users
+        try:
+            conn.execute("SELECT testops_user_id FROM load_test_users LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE load_test_users ADD COLUMN testops_user_id INTEGER")
+        try:
+            conn.execute("SELECT project_user_id FROM load_test_users LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE load_test_users ADD COLUMN project_user_id INTEGER")
+        # Add quality and sessions_data columns to superfights
+        for col, default in [("quality", "'{}'"), ("sessions_data", "'[]'")]:
+            try:
+                conn.execute(f"SELECT {col} FROM superfights LIMIT 1")
+            except sqlite3.OperationalError:
+                try:
+                    conn.execute(f"ALTER TABLE superfights ADD COLUMN {col} TEXT DEFAULT {default}")
+                except sqlite3.OperationalError:
+                    pass
 
 
 # ── Matches ──────────────────────────────────────────────────────
@@ -352,6 +416,38 @@ def insert_turn(session_id: str, turn_number: int, user_message: str,
              eval_latency, datetime.now().isoformat()),
         )
     return get_turns(session_id, turn_number)
+
+
+def update_turn_response(session_id: str, turn_number: int,
+                         assistant_response: str = None, status: str = None,
+                         ttfb_ms: float = 0, total_ms: float = 0, poll_count: int = 0,
+                         tool_calls: list = None, error: str = None,
+                         eval_latency: int = None):
+    """Update a pending turn with Kai's response data."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE turns SET assistant_response = ?, status = ?,
+               ttfb_ms = ?, total_ms = ?, poll_count = ?,
+               tool_calls = ?, error = ?, eval_latency = ?
+               WHERE session_id = ? AND turn_number = ?""",
+            (assistant_response, status, ttfb_ms, total_ms, poll_count,
+             json.dumps(tool_calls or []), error, eval_latency,
+             session_id, turn_number),
+        )
+
+
+def update_turn_eval(session_id: str, turn_number: int,
+                     eval_relevance: int = None, eval_accuracy: int = None,
+                     eval_helpfulness: int = None, eval_tool_usage: int = None):
+    """Update evaluation scores on an existing turn (called after async eval completes)."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE turns SET eval_relevance = ?, eval_accuracy = ?,
+               eval_helpfulness = ?, eval_tool_usage = ?
+               WHERE session_id = ? AND turn_number = ?""",
+            (eval_relevance, eval_accuracy, eval_helpfulness, eval_tool_usage,
+             session_id, turn_number),
+        )
 
 
 def get_turns(session_id: str, turn_number: int = None) :
@@ -691,3 +787,142 @@ def get_match_trends(ring: str = None, pass_threshold: float = 3.0) -> dict:
             "trends": trends,
             "rings": [r["env_key"] for r in ring_rows],
         }
+
+
+# ── Load Test Users ──────────────────────────────────────────────
+
+def save_load_test_user(env_key: str, email: str, password: str,
+                        user_id: int = None, testops_user_id: int = None,
+                        account_user_id: int = None, project_user_id: int = None,
+                        license_allocation_id: int = None,
+                        status: str = "pending", error: str = None):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO load_test_users
+               (env_key, email, password, user_id, testops_user_id,
+                account_user_id, project_user_id,
+                license_allocation_id, status, error, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (env_key, email, password, user_id, testops_user_id,
+             account_user_id, project_user_id,
+             license_allocation_id, status, error),
+        )
+
+
+def get_load_test_user(email: str, env_key: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM load_test_users WHERE email = ? AND env_key = ?",
+            (email, env_key),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_load_test_users(env_key: str = None) -> list:
+    with get_conn() as conn:
+        if env_key:
+            rows = conn.execute(
+                "SELECT * FROM load_test_users WHERE env_key = ? ORDER BY created_at",
+                (env_key,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM load_test_users ORDER BY env_key, created_at"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_load_test_user(email: str, env_key: str, **kwargs):
+    allowed = {"status", "error", "user_id", "testops_user_id",
+               "account_user_id", "project_user_id",
+               "license_allocation_id", "bearer_token", "token_expires_at"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return
+    fields["updated_at"] = datetime.now().isoformat()
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    vals = list(fields.values()) + [email, env_key]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE load_test_users SET {sets} WHERE email = ? AND env_key = ?", vals)
+
+
+def delete_load_test_user(email: str, env_key: str):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM load_test_users WHERE email = ? AND env_key = ?",
+            (email, env_key),
+        )
+
+
+# ── Superfights ─────────────────────────────────────────────────
+
+def save_superfight(fight_id: str, weight_class: str, env_key: str,
+                    status: str = "pending", concurrency: int = 1,
+                    turns_per_fighter: int = 3, total_fighters: int = 0,
+                    completed: int = 0, errors: int = 0,
+                    latency: str = "{}", auth: str = "{}",
+                    fighters: str = "[]", sessions_data: str = "[]",
+                    config: str = "{}",
+                    throughput: str = "{}", quality: str = "{}",
+                    error_rate: float = 0,
+                    duration_s: float = 0,
+                    started_at: str = None, ended_at: str = None,
+                    error: str = None):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO superfights
+               (id, weight_class, env_key, status, concurrency, turns_per_fighter,
+                total_fighters, completed, errors, latency, auth, fighters,
+                sessions_data, config, throughput, quality, error_rate,
+                duration_s, started_at, ended_at, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (fight_id, weight_class, env_key, status, concurrency,
+             turns_per_fighter, total_fighters, completed, errors,
+             latency, auth, fighters, sessions_data, config, throughput, quality, error_rate,
+             duration_s, started_at, ended_at, error),
+        )
+
+
+def get_superfight(fight_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM superfights WHERE id = ?", (fight_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ("latency", "auth", "fighters", "sessions_data", "config", "throughput", "quality"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
+
+
+def list_superfights(limit: int = 50, env_key: str = None) -> list:
+    with get_conn() as conn:
+        if env_key:
+            rows = conn.execute(
+                "SELECT * FROM superfights WHERE env_key = ? ORDER BY created_at DESC LIMIT ?",
+                (env_key, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM superfights ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            for k in ("latency", "auth", "fighters", "config", "throughput", "quality"):
+                if isinstance(d.get(k), str):
+                    try:
+                        d[k] = json.loads(d[k])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            results.append(d)
+        return results
+
+
+def delete_superfight(fight_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM superfights WHERE id = ?", (fight_id,))

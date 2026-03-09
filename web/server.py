@@ -30,6 +30,9 @@ from session_runner import run_session, get_fixed_scenarios, get_semaphore, MAX_
 from actor_brain import set_eval_model, ActorBrain
 from rubric import load_rubric, save_rubric, reset_rubric
 from env_config import load_env_config, load_env_config_safe, save_env_config, reset_env_config, get_active_env, init_env_db, delete_env_profile
+from load_test_users import UserProvisioner
+from superfight_runner import run_superfight, get_superfight_state, list_superfight_states, WEIGHT_CLASSES
+from kai_benchmarks import score_superfight
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -42,6 +45,10 @@ _match_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MATCHES)
 
 # Max concurrent rounds per match (limits parallelism within a single match)
 MAX_ROUNDS_PER_MATCH = int(os.environ.get("MAX_ROUNDS_PER_MATCH", "3"))
+
+# Default ring settings
+DEFAULT_MAX_TURNS = 10
+DEFAULT_MAX_TIME = 600
 
 app.add_middleware(
     CORSMiddleware,
@@ -178,6 +185,8 @@ class ConfigUpdate(BaseModel):
     max_concurrent_matches: Optional[int] = None
     max_rounds_per_match: Optional[int] = None
     eval_model: Optional[str] = None
+    default_max_turns: Optional[int] = None
+    default_max_time: Optional[int] = None
 
 
 # ── REST Endpoints ────────────────────────────────────────────────
@@ -805,6 +814,8 @@ def get_config():
         "max_rounds_per_match": MAX_ROUNDS_PER_MATCH,
         "turn_model": TURN_MODEL,
         "eval_model": EVAL_MODEL,
+        "default_max_turns": DEFAULT_MAX_TURNS,
+        "default_max_time": DEFAULT_MAX_TIME,
         "claude_cli_available": claude_ok,
         "active_env": env_config.get("active", "production"),
         "active_env_name": env.get("name", "Production"),
@@ -1129,7 +1140,409 @@ def update_config(req: ConfigUpdate, user: str = Depends(require_admin)):
     if req.eval_model is not None:
         set_eval_model(req.eval_model)
         set_turn_model(req.eval_model)
+    if req.default_max_turns is not None:
+        global DEFAULT_MAX_TURNS
+        DEFAULT_MAX_TURNS = req.default_max_turns
+    if req.default_max_time is not None:
+        global DEFAULT_MAX_TIME
+        DEFAULT_MAX_TIME = req.default_max_time
     return get_config()
+
+
+# ── Load Test Users ──────────────────────────────────────────────
+
+class ProvisionRequest(BaseModel):
+    count: int = 1
+    env_key: Optional[str] = None  # defaults to active env
+
+
+class TeardownRequest(BaseModel):
+    email: Optional[str] = None  # single user
+    env_key: Optional[str] = None
+
+
+# Track active provisioning tasks
+_provision_tasks: dict[str, dict] = {}
+
+
+@app.get("/api/load-test/users")
+def list_load_test_users(env_key: Optional[str] = None, include_removed: bool = False):
+    """List provisioned load test users (excludes removed by default)."""
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    all_users = db.list_load_test_users(env_key)
+    users = all_users if include_removed else [u for u in all_users if u.get("status") != "removed"]
+
+    # Check which users are currently fighting
+    fighting_emails = set()
+    for state in list_superfight_states():
+        if state.get("status") == "running":
+            for f in state.get("fighters", []):
+                fighting_emails.add(f.get("email"))
+    for u in users:
+        if u.get("email") in fighting_emails:
+            u["fighting"] = True
+
+    summary = {
+        "total": len(users),
+        "active": sum(1 for u in users if u.get("status") == "active"),
+        "pending": sum(1 for u in users if u.get("status") == "pending"),
+        "error": sum(1 for u in users if u.get("status") == "error"),
+        "fighting": len(fighting_emails & {u.get("email") for u in users}),
+    }
+    return {"users": users, "summary": summary, "env_key": env_key}
+
+
+@app.post("/api/load-test/sync")
+async def sync_load_test_users(env_key: Optional[str] = None):
+    """Sync existing kai alias users from TestOps platform into local DB."""
+    env_config = load_env_config()
+    ek = env_key or env_config.get("active", "production")
+    env = env_config.get("environments", {}).get(ek)
+    if not env:
+        raise HTTPException(400, f"Environment '{ek}' not found")
+    try:
+        provisioner = UserProvisioner(env_key=ek)
+        result = await provisioner.sync_from_platform()
+        await provisioner.close()
+        return {"ok": True, **result, "env_key": ek}
+    except Exception as e:
+        logger.exception(f"Sync failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/load-test/provision")
+async def provision_load_test_users(req: ProvisionRequest, user: str = Depends(require_admin)):
+    """Provision load test alias users (admin only). Runs in background."""
+    env_config = load_env_config()
+    env_key = req.env_key or env_config.get("active", "production")
+    env = env_config.get("environments", {}).get(env_key)
+    if not env:
+        raise HTTPException(404, f"Environment '{env_key}' not found")
+
+    creds = env.get("credentials", {})
+    if not creds.get("email") or not creds.get("password"):
+        raise HTTPException(400, f"No credentials configured for environment '{env_key}'")
+
+    primary_email = creds["email"]
+    task_id = str(uuid.uuid4())[:8]
+
+    _provision_tasks[task_id] = {
+        "id": task_id,
+        "type": "provision",
+        "status": "running",
+        "env_key": env_key,
+        "count": req.count,
+        "completed": 0,
+        "errors": 0,
+        "results": [],
+    }
+
+    async def run_provision():
+        provisioner = UserProvisioner(env_key=env_key)
+        try:
+            results = await provisioner.provision_batch(primary_email, req.count)
+            _provision_tasks[task_id]["results"] = results
+            _provision_tasks[task_id]["completed"] = sum(
+                1 for r in results if r.get("status") == "active"
+            )
+            _provision_tasks[task_id]["errors"] = sum(
+                1 for r in results if r.get("status") == "error"
+            )
+            _provision_tasks[task_id]["status"] = "completed"
+        except Exception as e:
+            _provision_tasks[task_id]["status"] = "error"
+            _provision_tasks[task_id]["error"] = str(e)
+            logger.exception(f"Provision task {task_id} failed: {e}")
+        finally:
+            await provisioner.close()
+
+    asyncio.create_task(run_provision())
+
+    return {
+        "task_id": task_id,
+        "status": "started",
+        "count": req.count,
+        "env_key": env_key,
+    }
+
+
+@app.get("/api/load-test/provision/{task_id}")
+def get_provision_status(task_id: str):
+    """Get provisioning task status."""
+    task = _provision_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    return task
+
+
+@app.post("/api/load-test/teardown")
+async def teardown_load_test_users(req: TeardownRequest, user: str = Depends(require_admin)):
+    """Teardown load test users (admin only). Single user or all."""
+    env_config = load_env_config()
+    env_key = req.env_key or env_config.get("active", "production")
+
+    task_id = str(uuid.uuid4())[:8]
+    _provision_tasks[task_id] = {
+        "id": task_id,
+        "type": "teardown",
+        "status": "running",
+        "env_key": env_key,
+        "email": req.email,
+        "completed": 0,
+        "errors": 0,
+        "results": [],
+    }
+
+    async def run_teardown():
+        provisioner = UserProvisioner(env_key=env_key)
+        try:
+            if req.email:
+                result = await provisioner.teardown_user(req.email)
+                results = [result]
+            else:
+                results = await provisioner.teardown_all(env_key)
+
+            _provision_tasks[task_id]["results"] = results
+            _provision_tasks[task_id]["completed"] = sum(
+                1 for r in results if r.get("status") == "removed"
+            )
+            _provision_tasks[task_id]["errors"] = sum(
+                1 for r in results if r.get("status") == "error"
+            )
+            _provision_tasks[task_id]["status"] = "completed"
+        except Exception as e:
+            _provision_tasks[task_id]["status"] = "error"
+            _provision_tasks[task_id]["error"] = str(e)
+            logger.exception(f"Teardown task {task_id} failed: {e}")
+        finally:
+            await provisioner.close()
+
+    asyncio.create_task(run_teardown())
+
+    return {"task_id": task_id, "status": "started", "env_key": env_key}
+
+
+@app.delete("/api/load-test/users/{email:path}")
+def delete_load_test_user_record(email: str, env_key: Optional[str] = None,
+                                  user: str = Depends(require_admin)):
+    """Delete a load test user record from DB (does not teardown from platform)."""
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    db.delete_load_test_user(email, env_key)
+    return {"deleted": email, "env_key": env_key}
+
+
+# ── Superfight (Load Test) ───────────────────────────────────────
+
+class SuperfightRequest(BaseModel):
+    weight_class: str = "flyweight"
+    num_users: Optional[int] = None  # auto from active users if not set
+    windows_per_user: int = 1  # chat windows per user (xPower)
+    turns_per_session: int = 3
+    ramp_up_s: float = 0.0  # stagger user starts over this window (0 = all at once)
+    interval_s: float = 0.0  # delay between turns within a session
+    messages: Optional[list] = None
+    env_key: Optional[str] = None
+    fight_mode: str = "fixed"  # fixed, fire, explore, hybrid
+    scenario_category: Optional[str] = None  # filter scenarios by category (for fixed mode)
+
+
+@app.get("/api/superfight/weight-classes")
+def get_weight_classes():
+    return {"weight_classes": WEIGHT_CLASSES}
+
+
+@app.post("/api/superfight/start")
+async def start_superfight(req: SuperfightRequest, user: str = Depends(require_admin)):
+    """Start a superfight (load test). N users × M windows. Admin only."""
+    env_config = load_env_config()
+    env_key = req.env_key or env_config.get("active", "production")
+
+    wc = WEIGHT_CLASSES.get(req.weight_class)
+    if not wc:
+        raise HTTPException(400, f"Unknown weight class: {req.weight_class}. Options: {list(WEIGHT_CLASSES.keys())}")
+
+    # Check active users
+    all_users = db.list_load_test_users(env_key)
+    active_users = [u for u in all_users if u.get("status") == "active"]
+    if not active_users:
+        raise HTTPException(400, f"No active load test users in '{env_key}'. Provision users first.")
+
+    num_users = min(req.num_users or len(active_users), len(active_users))
+    total_sessions = num_users * req.windows_per_user
+
+    # Build messages based on fight mode
+    fight_messages = req.messages
+    fight_mode = req.fight_mode or "fixed"
+    if fight_mode == "fixed" and not fight_messages:
+        # Use predefined scenarios as messages
+        scenarios = get_fixed_scenarios()
+        if req.scenario_category:
+            scenarios = [s for s in scenarios if s["category"] == req.scenario_category]
+        if scenarios:
+            # Collect all step messages from matching scenarios
+            fight_messages = []
+            for sc in scenarios:
+                for step in sc.get("steps", []):
+                    fight_messages.append(step.get("message", ""))
+            fight_messages = [m for m in fight_messages if m.strip()]
+
+    fight_id = str(uuid.uuid4())[:8]
+
+    async def on_progress(fid, summary):
+        await manager.broadcast(fid, {"type": "superfight_progress", "fight_id": fid, **summary})
+
+    asyncio.create_task(run_superfight(
+        fight_id=fight_id,
+        weight_class=req.weight_class,
+        env_key=env_key,
+        num_users=num_users,
+        windows_per_user=req.windows_per_user,
+        turns_per_session=req.turns_per_session,
+        ramp_up_s=req.ramp_up_s,
+        interval_s=req.interval_s,
+        messages=fight_messages,
+        fight_mode=fight_mode,
+        scenario_category=req.scenario_category,
+        on_progress=on_progress,
+    ))
+
+    return {
+        "fight_id": fight_id,
+        "weight_class": req.weight_class,
+        "fight_mode": fight_mode,
+        "num_users": num_users,
+        "windows_per_user": req.windows_per_user,
+        "total_sessions": total_sessions,
+        "turns_per_session": req.turns_per_session if fight_mode != "fixed" else len(fight_messages or []),
+        "ramp_up_s": req.ramp_up_s,
+        "interval_s": req.interval_s,
+        "status": "started",
+    }
+
+
+@app.get("/api/superfight/active")
+def get_active_superfight():
+    """Get currently running superfight (if any)."""
+    states = list_superfight_states()
+    running = [s for s in states if s.get("status") == "running"]
+    if running:
+        return running[0]
+    return None
+
+
+@app.get("/api/superfight/{fight_id}")
+def get_superfight(fight_id: str):
+    """Get superfight status (live state or from DB)."""
+    # Check live state first
+    state = get_superfight_state(fight_id)
+    if state:
+        return state.summary()
+    # Fall back to DB
+    record = db.get_superfight(fight_id)
+    if not record:
+        raise HTTPException(404, "Superfight not found")
+    # Merge sessions_data into sessions field for consistent frontend access
+    if record.get("sessions_data") and not record.get("sessions"):
+        record["sessions"] = record["sessions_data"]
+    _attach_benchmark(record)
+    return record
+
+
+def _attach_benchmark(fight: dict) -> dict:
+    """Compute and attach benchmark scoring to a superfight record."""
+    latency = fight.get("latency") or {}
+    quality = fight.get("quality") or {}
+    error_rate = fight.get("error_rate", 0)
+    if latency.get("avg_ttfb_ms", 0) > 0:
+        fight["benchmark"] = score_superfight(latency, quality, error_rate)
+    return fight
+
+
+@app.get("/api/superfights")
+def list_superfights(limit: int = 50, env_key: Optional[str] = None):
+    """List superfight history."""
+    fights = db.list_superfights(limit, env_key)
+    for f in fights:
+        _attach_benchmark(f)
+    active = [s for s in list_superfight_states() if s.get("status") == "running"]
+    return {"fights": fights, "active_count": len(active)}
+
+
+@app.get("/api/superfights/compare")
+def compare_superfights(env_key: Optional[str] = None, limit: int = 10):
+    """Compare results across multiple superfight runs for trend analysis."""
+    fights = db.list_superfights(limit, env_key)
+    if not fights:
+        return {"comparison": [], "summary": {}}
+
+    comparison = []
+    for f in fights:
+        lat = f.get("latency", {})
+        thr = f.get("throughput", {})
+        cfg = f.get("config", {})
+        qual = f.get("quality", {})
+        comparison.append({
+            "id": f["id"],
+            "weight_class": f["weight_class"],
+            "status": f["status"],
+            "config": cfg,
+            "total_sessions": f.get("total_fighters", 0),
+            "completed": f.get("completed", 0),
+            "errors": f.get("errors", 0),
+            "error_rate": f.get("error_rate", 0),
+            "avg_ttfb_ms": lat.get("avg_ttfb_ms", 0),
+            "p95_ttfb_ms": lat.get("p95_ttfb_ms", 0),
+            "avg_total_ms": lat.get("avg_total_ms", 0),
+            "p95_total_ms": lat.get("p95_total_ms", 0),
+            "turns_per_second": thr.get("turns_per_second", 0) if isinstance(thr, dict) else 0,
+            "quality": {
+                "response_rate": qual.get("response_rate", 0) if isinstance(qual, dict) else 0,
+                "tool_engagement": qual.get("tool_engagement", 0) if isinstance(qual, dict) else 0,
+                "completion_rate": qual.get("completion_rate", 0) if isinstance(qual, dict) else 0,
+                "avg_response_length": qual.get("avg_response_length", 0) if isinstance(qual, dict) else 0,
+            },
+            "duration_s": f.get("duration_s", 0),
+            "created_at": f.get("created_at"),
+        })
+
+    # Aggregate summary across all completed runs
+    completed_runs = [c for c in comparison if c["status"] == "completed"]
+    summary = {}
+    if completed_runs:
+        avg_quality = {
+            "response_rate": round(sum(c["quality"]["response_rate"] for c in completed_runs) / len(completed_runs), 3),
+            "tool_engagement": round(sum(c["quality"]["tool_engagement"] for c in completed_runs) / len(completed_runs), 3),
+            "completion_rate": round(sum(c["quality"]["completion_rate"] for c in completed_runs) / len(completed_runs), 3),
+        }
+        summary = {
+            "total_runs": len(completed_runs),
+            "avg_error_rate": round(sum(c["error_rate"] for c in completed_runs) / len(completed_runs), 3),
+            "avg_ttfb_ms": round(sum(c["avg_ttfb_ms"] for c in completed_runs) / len(completed_runs), 1),
+            "avg_p95_ttfb_ms": round(sum(c["p95_ttfb_ms"] for c in completed_runs) / len(completed_runs), 1),
+            "avg_total_ms": round(sum(c["avg_total_ms"] for c in completed_runs) / len(completed_runs), 1),
+            "avg_throughput": round(sum(c["turns_per_second"] for c in completed_runs) / len(completed_runs), 2),
+            "avg_quality": avg_quality,
+            "trend": "improving" if len(completed_runs) >= 2 and completed_runs[0]["avg_ttfb_ms"] < completed_runs[-1]["avg_ttfb_ms"] else
+                     "degrading" if len(completed_runs) >= 2 and completed_runs[0]["avg_ttfb_ms"] > completed_runs[-1]["avg_ttfb_ms"] * 1.1 else
+                     "stable",
+        }
+
+    return {"comparison": comparison, "summary": summary}
+
+
+@app.delete("/api/superfight/{fight_id}")
+def delete_superfight_endpoint(fight_id: str, user: str = Depends(require_admin)):
+    record = db.get_superfight(fight_id)
+    if not record:
+        raise HTTPException(404, "Superfight not found")
+    if record["status"] == "running":
+        raise HTTPException(400, "Cannot delete a running superfight")
+    db.delete_superfight(fight_id)
+    return {"deleted": fight_id}
 
 
 # ── WebSocket ─────────────────────────────────────────────────────

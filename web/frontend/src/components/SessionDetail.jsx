@@ -3,18 +3,12 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Timer, Zap, Activity, Award, MessageSquare, BarChart3, AlertTriangle, Terminal, User, Bot, Clock, RotateCcw } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getSession, connectWebSocket, startSession, formatTime } from '../api'
+import { getSession, connectWebSocket, startSession, formatTime, formatMs } from '../api'
 
 function ScoreDisplay({ value, max = 5 }) {
   if (value == null) return <span style={{ color: 'var(--text-muted)' }}>-</span>
   const cls = value >= 4 ? 'high' : value >= 3 ? 'mid' : 'low'
   return <span className={`score ${cls}`}>{value}/{max}</span>
-}
-
-function formatMs(ms) {
-  if (!ms || ms <= 0) return '-'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
 }
 
 export default function SessionDetail() {
@@ -58,6 +52,12 @@ export default function SessionDetail() {
       } else if (data.type === 'turn_complete') {
         setLiveTurns(prev =>
           prev.map(t => t.turn_number === data.turn_number ? { ...data, pending: false } : t)
+        )
+        load()
+      } else if (data.type === 'turn_scored') {
+        // Evaluation scores arrived — update the turn and reload from DB
+        setLiveTurns(prev =>
+          prev.map(t => t.turn_number === data.turn_number ? { ...t, eval: data.eval, eval_latency: data.eval_latency } : t)
         )
         load()
       } else if (data.type === 'session_complete') {
@@ -104,7 +104,9 @@ export default function SessionDetail() {
       setRematchning(false)
     }
   }
+  // Merge DB turns with live turns (live turns may have newer data before DB poll catches up)
   const allTurns = turns.length > 0 ? turns : liveTurns.filter(t => !t.pending)
+  const isWaitingForFirstTurn = session?.status === 'running' && allTurns.length === 0 && liveTurns.length === 0
 
   const ttfbs = allTurns.filter(t => t.ttfb_ms > 0).map(t => t.ttfb_ms)
   const totals = allTurns.filter(t => t.total_ms > 0).map(t => t.total_ms)
@@ -243,13 +245,20 @@ export default function SessionDetail() {
       <div className="card" ref={conversationContainerRef} style={{ maxHeight: '600px', overflowY: 'auto' }}>
         <h3><MessageSquare size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Conversation</h3>
         <div className="conversation">
+          {isWaitingForFirstTurn && (
+            <div className="message" style={{ alignSelf: 'flex-start', background: 'var(--katalon-teal)', color: 'white', borderBottomLeftRadius: '4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0' }}>
+                <span className="spinner" style={{ borderTopColor: 'white' }} /> Joe is preparing the first exchange...
+              </div>
+            </div>
+          )}
           {allTurns.map((t, i) => (
             <div key={i}>
               <div className="message user">
                 <div className="message-header" style={{ display: 'flex', alignItems: 'center' }}>
                   <User size={10} /> Exchange {t.turn_number} — Joe
                   {t.timestamp && (
-                    <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 400, display: 'inline-flex', alignItems: 'center', gap: '0.15rem' }}>
+                    <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: 'rgba(255,255,255,0.7)', fontWeight: 400, display: 'inline-flex', alignItems: 'center', gap: '0.15rem' }}>
                       <Clock size={8} /> {formatTime(t.timestamp)}
                     </span>
                   )}
@@ -305,7 +314,7 @@ export default function SessionDetail() {
                   {t.error && <div style={{ color: 'var(--red)', fontSize: '0.75rem', marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}><AlertTriangle size={12} /> {t.error}</div>}
                 </div>
               ) : (
-                isRunning && i === allTurns.length - 1 && (
+                (isRunning || t.status === 'pending') && (
                   <div className="message assistant">
                     <div className="loading-text"><span className="spinner" /> Kai is thinking...</div>
                   </div>

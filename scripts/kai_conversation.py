@@ -135,6 +135,10 @@ class KaiMatch:
 
         logger.info(f"[match={self.match_id}] Round {rnd}: sending '{message[:80]}...'")
 
+        # Wait for Kai to be ready before sending (prevents "invalid request" errors)
+        if self.state.thread_id:
+            self.client.wait_for_ready(self.state.thread_id)
+
         chat_result = self.client.chat(
             message=message,
             thread_id=self.state.thread_id,

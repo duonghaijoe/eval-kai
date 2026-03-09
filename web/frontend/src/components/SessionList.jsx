@@ -1,14 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { List, Plus, Trash2, Clock, Timer, Zap, Award, Activity, ExternalLink, Trophy, RotateCcw, Search, Filter, CheckSquare, Square, X } from 'lucide-react'
-import { listSessions, deleteSession, startSession, bulkDeleteSessions, formatDt } from '../api'
-import { useAdmin } from '../App'
-
-function formatMs(ms) {
-  if (!ms || ms <= 0) return '-'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
+import { listSessions, deleteSession, startSession, bulkDeleteSessions, formatDt, formatMs, formatSec } from '../api'
+import { useAdmin } from '../AdminContext'
 
 function ScoreBadge({ value }) {
   if (value == null) return null
@@ -278,7 +272,7 @@ export default function SessionList() {
                 {s.started_at && s.ended_at && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                     <Clock size={12} />
-                    {((new Date(s.ended_at) - new Date(s.started_at)) / 1000).toFixed(0)}s duration
+                    {formatSec((new Date(s.ended_at) - new Date(s.started_at)) / 1000)} duration
                   </div>
                 )}
 

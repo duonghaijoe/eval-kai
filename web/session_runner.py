@@ -203,13 +203,27 @@ async def _execute_session(
         else:
             raise ValueError(f"Unknown actor mode: {actor_mode}")
 
-        # Notify turn start
+        # Save pending turn to DB immediately so UI polling picks it up
+        db.insert_turn(
+            session_id=session_id,
+            turn_number=turn_num,
+            user_message=message,
+            status="pending",
+        )
+
+        # Notify turn start (WebSocket)
         if on_turn:
             await _safe_callback(on_turn, session_id, {
                 "type": "turn_start",
                 "turn_number": turn_num,
                 "user_message": message,
             })
+
+        # Wait for Kai to be ready before sending (prevents "invalid request" errors)
+        if thread_id:
+            ready_status = await asyncio.to_thread(kai_client.wait_for_ready, thread_id)
+            if ready_status == "timeout":
+                logger.warning(f"Session {session_id} turn {turn_num}: Kai not ready after timeout, attempting anyway")
 
         # Send to Kai
         chat_result = await asyncio.to_thread(
@@ -237,24 +251,16 @@ async def _execute_session(
                 "content": [{"type": "text", "text": chat_result.text}],
             })
 
-        # Evaluate turn
-        eval_scores = {}
-        if brain and chat_result.text:
-            eval_scores = await brain.evaluate_turn(
-                message, chat_result.text, goal or "", turn_num,
-            )
-
         # Auto-score latency from rubric thresholds
         latency_score = score_latency(
             chat_result.analytics.ttfb_ms,
             chat_result.analytics.total_ms,
         )
 
-        # Save turn to DB
-        db.insert_turn(
+        # Update the pending turn with Kai's response (without eval scores yet)
+        db.update_turn_response(
             session_id=session_id,
             turn_number=turn_num,
-            user_message=message,
             assistant_response=chat_result.text,
             status=chat_result.status,
             ttfb_ms=chat_result.analytics.ttfb_ms,
@@ -262,14 +268,10 @@ async def _execute_session(
             poll_count=chat_result.analytics.poll_count,
             tool_calls=[tc.name for tc in chat_result.analytics.tool_calls],
             error=chat_result.analytics.error_message,
-            eval_relevance=eval_scores.get("relevance"),
-            eval_accuracy=eval_scores.get("accuracy"),
-            eval_helpfulness=eval_scores.get("helpfulness"),
-            eval_tool_usage=eval_scores.get("tool_usage"),
             eval_latency=latency_score,
         )
 
-        # Notify turn complete
+        # Broadcast turn_complete immediately so UI shows the response
         if on_turn:
             await _safe_callback(on_turn, session_id, {
                 "type": "turn_complete",
@@ -282,9 +284,33 @@ async def _execute_session(
                 "poll_count": chat_result.analytics.poll_count,
                 "tool_calls": [tc.name for tc in chat_result.analytics.tool_calls],
                 "error": chat_result.analytics.error_message,
-                "eval": eval_scores,
+                "eval": {},
                 "eval_latency": latency_score,
             })
+
+        # Evaluate turn in background (Claude CLI ~20-30s) — don't block UI
+        eval_scores = {}
+        if brain and chat_result.text:
+            eval_scores = await brain.evaluate_turn(
+                message, chat_result.text, goal or "", turn_num,
+            )
+            # Update turn with eval scores
+            db.update_turn_eval(
+                session_id=session_id,
+                turn_number=turn_num,
+                eval_relevance=eval_scores.get("relevance"),
+                eval_accuracy=eval_scores.get("accuracy"),
+                eval_helpfulness=eval_scores.get("helpfulness"),
+                eval_tool_usage=eval_scores.get("tool_usage"),
+            )
+            # Notify UI that scores are ready
+            if on_turn:
+                await _safe_callback(on_turn, session_id, {
+                    "type": "turn_scored",
+                    "turn_number": turn_num,
+                    "eval": eval_scores,
+                    "eval_latency": latency_score,
+                })
 
         # Rate limit between turns
         await asyncio.sleep(1)

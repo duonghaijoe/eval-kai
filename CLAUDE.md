@@ -80,6 +80,62 @@ devops:
 
 ---
 
+## Terminology (Boxing Analogy)
+
+All UI, code, and documentation MUST use these terms consistently.
+
+### Single-User Testing (Matches)
+| Term | Meaning | Example |
+|------|---------|---------|
+| **Match** | One complete test conversation with Kai (1+ rounds) | A fire/explore/hybrid test run |
+| **Round** | A segment within a match (1+ exchanges) | "Test the login flow" — a themed block of conversation |
+| **Exchange** | One pair of turns — user msg + Kai response | "Show me test results" → Kai responds |
+
+Hierarchy: `Match > Round > Exchange`
+
+### Load Testing (Superfight Camp)
+| Term | Meaning | Example |
+|------|---------|---------|
+| **Superfight** | The entire load test event | "Flyweight with 4 bouts x 6 rounds" |
+| **Fighter** | A provisioned test user | `kai_1772983749_0` |
+| **xPower** | Concurrent chat windows per fighter | 2 xPower = 2 parallel conversations |
+| **Bout** | One conversation = one Match (fighter x window) | Fighter #1, Window #0 = 1 bout |
+| **Round** | A segment within a bout (1+ punches) | Same as a Match round |
+| **Punch** | A single turn — one message sent or received | User sends "Hello" = 1 punch, Kai responds = 1 punch |
+
+Hierarchy: `Superfight > Fighter > Bout (=Match) > Round > Punch (=Turn)`
+
+Formula: `N fighters x M xPower = N*M bouts x R rounds`
+
+### Equivalence Table
+| Match Context | Superfight Context | Generic |
+|--------------|-------------------|---------|
+| Match | Bout | Conversation |
+| Round | Round | Segment / topic block |
+| Exchange | Punch | User msg + Kai response |
+| — | Fighter | Test user |
+| — | xPower | Concurrency multiplier |
+| — | Superfight | Load test event |
+
+### Scoring (applies to BOTH Match and Superfight)
+| Metric | Source | Description |
+|--------|--------|-------------|
+| **TTFT** | Nielsen/Google UX | Time to First Token — how fast Kai starts responding |
+| **Full Answer** | Forrester/AgentBench | Total time from message to complete response |
+| **Latency Grade** | `kai_benchmarks.py` | A+ to F, 4-tier thresholds (Excellent/Good/Acceptable/Critical) |
+| **Quality Score** | Anthropic/AgentBench | Relevance, Accuracy, Helpfulness, Tool Usage (1-5 each) |
+| **Response Rate** | Load test only | % of rounds that got a non-empty response |
+| **Completion Rate** | Load test only | % of bouts that completed all rounds |
+| **Error Rate** | Load test only | % of bouts that errored |
+
+### Terms to NEVER use
+- ~~Session~~ → use **Match** (single-user) or **Bout** (load test)
+- ~~Turn~~ → use **Punch** (load test) or **Exchange** (single-user)
+- ~~TTFB~~ → use **TTFT** (Time to First Token) in UI
+- ~~steps~~ → use **Rounds**
+
+---
+
 ## Kai API Protocol
 Kai uses a CopilotKit-based two-endpoint protocol:
 1. **POST `/agent/orchestratorAgent/run`** — starts agent, returns `{"status":"working"}`

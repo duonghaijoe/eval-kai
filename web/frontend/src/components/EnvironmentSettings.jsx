@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity, Bot } from 'lucide-react'
 import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth, getConfig, updateConfig } from '../api'
-import { useAdmin } from '../App'
+import { useAdmin } from '../AdminContext'
 
 function HealthResult({ health }) {
   if (!health) return null

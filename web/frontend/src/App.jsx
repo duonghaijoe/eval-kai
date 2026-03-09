@@ -1,7 +1,8 @@
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock, TrendingUp } from 'lucide-react'
+import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock, TrendingUp, Users, Swords, Coffee, Code } from 'lucide-react'
 import './App.css'
+import { AdminContext, useAdmin } from './AdminContext'
 import SessionLauncher from './components/SessionLauncher'
 import SessionList from './components/SessionList'
 import SessionDetail from './components/SessionDetail'
@@ -11,11 +12,10 @@ import Reports from './components/Reports'
 import MatchTrends from './components/MatchTrends'
 import RubricSettings from './components/RubricSettings'
 import EnvironmentSettings from './components/EnvironmentSettings'
+import LoadTestUsers from './components/LoadTestUsers'
+import SuperfightArena from './components/SuperfightArena'
+import Guideline from './components/Guideline'
 import { listSessions, listMatches, checkHealth, getConfig, login, getMe, logout } from './api'
-
-// Global admin context
-export const AdminContext = createContext({ admin: null, setAdmin: () => {} })
-export function useAdmin() { return useContext(AdminContext) }
 
 function AdminButton() {
   const { admin, setAdmin } = useAdmin()
@@ -149,17 +149,26 @@ function App() {
             <NavLink to="/matches" className={({ isActive }) => isActive ? 'active' : ''}>
               <Trophy size={16} /> Matches
             </NavLink>
+            <NavLink to="/trends" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
+              <TrendingUp size={14} /> Match Analysis
+            </NavLink>
+            <NavLink to="/reports" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
+              <BarChart3 size={14} /> Fight Record
+            </NavLink>
+            <NavLink to="/load-test" end className={({ isActive }) => isActive ? 'active' : ''}>
+              <Users size={16} /> Superfight Camp
+            </NavLink>
+            <NavLink to="/load-test/fighters" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
+              <Users size={14} /> Talent Scouting
+            </NavLink>
             <NavLink to="/sessions" className={({ isActive }) => isActive ? 'active' : ''}>
               <List size={16} /> Rounds
             </NavLink>
-            <NavLink to="/reports" className={({ isActive }) => isActive ? 'active' : ''}>
-              <BarChart3 size={16} /> Fight Record
-            </NavLink>
-            <NavLink to="/trends" className={({ isActive }) => isActive ? 'active' : ''}>
-              <TrendingUp size={16} /> Match Analysis
-            </NavLink>
             <NavLink to="/rubric" className={({ isActive }) => isActive ? 'active' : ''}>
               <Scale size={16} /> Judging Criteria
+            </NavLink>
+            <NavLink to="/guideline" className={({ isActive }) => isActive ? 'active' : ''}>
+              <BookOpen size={16} /> Fight Manual
             </NavLink>
             <NavLink to="/environment" className={({ isActive }) => isActive ? 'active' : ''}>
               <Settings size={16} /> Arena Settings
@@ -196,6 +205,10 @@ function App() {
         </aside>
         <main className="main">
           <div className="top-bar">
+            <div className="app-slogan">
+              <Swords size={14} />
+              <span>The goal isn't to destroy Kai — it's to make Kai undestroyable.</span>
+            </div>
             <AdminButton />
           </div>
           <Routes>
@@ -208,8 +221,15 @@ function App() {
             <Route path="/reports" element={<Reports />} />
             <Route path="/trends" element={<MatchTrends />} />
             <Route path="/rubric" element={<RubricSettings />} />
+            <Route path="/guideline" element={<Guideline />} />
+            <Route path="/load-test" element={<SuperfightArena />} />
+            <Route path="/load-test/fighters" element={<LoadTestUsers />} />
             <Route path="/environment" element={<EnvironmentSettings />} />
           </Routes>
+          <footer className="app-footer">
+            <span><Coffee size={12} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />Built with caffeine, Claude Code, and an unhealthy obsession with latency percentiles.</span>
+            <span><Code size={12} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />Joe vs Kai — AI Agent Test Arena</span>
+          </footer>
         </main>
       </div>
     </AdminContext.Provider>

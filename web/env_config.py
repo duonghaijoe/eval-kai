@@ -70,6 +70,8 @@ def init_env_db():
                 cred_email TEXT DEFAULT '',
                 cred_password TEXT DEFAULT '',
                 cred_account TEXT DEFAULT '',
+                license_source_id TEXT DEFAULT '',
+                license_feature TEXT DEFAULT '',
                 is_active INTEGER DEFAULT 0
             )
         """)
@@ -110,6 +112,16 @@ def init_env_db():
                 params.append(staging_defaults.get("account_name", ""))
                 if updates:
                     conn.execute(f"UPDATE env_profiles SET {', '.join(updates)} WHERE key='staging'", params)
+        # Migrate: add license_source_id and license_feature columns
+        try:
+            conn.execute("SELECT license_source_id FROM env_profiles LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE env_profiles ADD COLUMN license_source_id TEXT DEFAULT ''")
+            conn.execute("ALTER TABLE env_profiles ADD COLUMN license_feature TEXT DEFAULT ''")
+            # Set staging defaults
+            conn.execute(
+                "UPDATE env_profiles SET license_source_id = '49', license_feature = 'TESTOPS_G3_FULL' WHERE key = 'staging'"
+            )
 
 
 def _seed_defaults(conn):
@@ -169,6 +181,8 @@ def _row_to_dict(row) -> dict:
         "org_id": row["org_id"] or "",
         "account_id": row["account_id"] or "",
         "account_name": row["account_name"] or "",
+        "license_source_id": row["license_source_id"] if "license_source_id" in row.keys() else "",
+        "license_feature": row["license_feature"] if "license_feature" in row.keys() else "",
         "credentials": {
             "email": row["cred_email"] or "",
             "password": row["cred_password"] or "",
@@ -228,7 +242,8 @@ def save_env_config(config: dict) -> dict:
                     UPDATE env_profiles SET
                         name=?, base_url=?, login_url=?, platform_url=?,
                         project_id=?, project_name=?, org_id=?, account_id=?,
-                        account_name=?, cred_email=?, cred_password=?, cred_account=?
+                        account_name=?, cred_email=?, cred_password=?, cred_account=?,
+                        license_source_id=?, license_feature=?
                     WHERE key = ?
                 """, (
                     env.get("name", key), env.get("base_url", ""),
@@ -237,7 +252,9 @@ def save_env_config(config: dict) -> dict:
                     env.get("org_id", ""), env.get("account_id", ""),
                     env.get("account_name", ""),
                     creds.get("email", ""), creds.get("password", ""),
-                    creds.get("account", ""), key,
+                    creds.get("account", ""),
+                    env.get("license_source_id", ""), env.get("license_feature", ""),
+                    key,
                 ))
             else:
                 # Insert new profile
@@ -268,6 +285,15 @@ def delete_env_profile(key: str):
         if row["is_active"]:
             raise ValueError("Cannot delete the active environment")
         conn.execute("DELETE FROM env_profiles WHERE key = ?", (key,))
+
+
+def get_env_by_key(key: str) -> dict:
+    """Return a specific environment's settings (with real credentials)."""
+    with _get_conn() as conn:
+        row = conn.execute("SELECT * FROM env_profiles WHERE key = ?", (key,)).fetchone()
+        if not row:
+            raise ValueError(f"Environment '{key}' not found")
+        return _row_to_dict(row)
 
 
 def get_active_env() -> dict:

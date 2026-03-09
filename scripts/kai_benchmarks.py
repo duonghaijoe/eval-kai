@@ -274,6 +274,91 @@ def _compare_to_competitors(ttfb_ms: float, total_ms: float) -> list:
     return results
 
 
+def score_superfight(latency: dict, quality: dict, error_rate: float) -> dict:
+    """Score a superfight (load test) using the same benchmarks as matches.
+
+    Args:
+        latency: dict with avg_ttfb_ms, avg_total_ms, p95_ttfb_ms, p95_total_ms
+        quality: dict with response_rate, completion_rate, tool_engagement
+        error_rate: fraction of bouts that errored (0.0 - 1.0)
+
+    Returns:
+        Comprehensive scoring with grades, matching the match eval format.
+    """
+    avg_ttfb = latency.get("avg_ttfb_ms", 0)
+    avg_total = latency.get("avg_total_ms", 0)
+    p95_ttfb = latency.get("p95_ttfb_ms", 0)
+    p95_total = latency.get("p95_total_ms", 0)
+
+    # Score latency (same thresholds as matches)
+    ttfb_score = score_ttfb(avg_ttfb) if avg_ttfb > 0 else {"tier": "n/a", "score": 0}
+    total_score = score_total(avg_total) if avg_total > 0 else {"tier": "n/a", "score": 0}
+    p95_ttfb_score = score_ttfb(p95_ttfb) if p95_ttfb > 0 else {"tier": "n/a", "score": 0}
+    p95_total_score = score_total(p95_total) if p95_total > 0 else {"tier": "n/a", "score": 0}
+
+    # Quality scoring (convert 0-1 rates to 1-5 scale)
+    resp_rate = quality.get("response_rate", 0)
+    comp_rate = quality.get("completion_rate", 0)
+    tool_eng = quality.get("tool_engagement", 0)
+
+    def rate_to_score(rate):
+        if rate >= 0.98: return 5
+        if rate >= 0.90: return 4
+        if rate >= 0.75: return 3
+        if rate >= 0.50: return 2
+        return 1
+
+    # Error rate scoring (inverted — lower is better)
+    def error_to_score(rate):
+        if rate <= 0.02: return 5
+        if rate <= 0.05: return 4
+        if rate <= 0.15: return 3
+        if rate <= 0.30: return 2
+        return 1
+
+    response_score = rate_to_score(resp_rate)
+    completion_score = rate_to_score(comp_rate)
+    tool_score = rate_to_score(tool_eng)
+    error_score = error_to_score(error_rate)
+
+    # Overall: weighted combination
+    # Latency 40% (avg 20% + p95 20%), Quality 35%, Reliability 25%
+    latency_avg_score = (ttfb_score.get("score", 0) * 0.4 + total_score.get("score", 0) * 0.6) if avg_ttfb > 0 else 0
+    latency_p95_score = (p95_ttfb_score.get("score", 0) * 0.4 + p95_total_score.get("score", 0) * 0.6) if p95_ttfb > 0 else 0
+    quality_score = (response_score * 0.4 + completion_score * 0.3 + tool_score * 0.3)
+    reliability_score = error_score
+
+    overall = round(
+        latency_avg_score * 0.2 +
+        latency_p95_score * 0.2 +
+        quality_score * 0.35 +
+        reliability_score * 0.25,
+        1
+    )
+
+    grade = get_grade(overall)
+
+    return {
+        "overall_score": overall,
+        "grade": grade["grade"],
+        "grade_label": grade["label"],
+        "grade_color": grade["color"],
+        "latency": {
+            "avg": {"ttfb": ttfb_score, "total": total_score, "combined": round(latency_avg_score, 1)},
+            "p95": {"ttfb": p95_ttfb_score, "total": p95_total_score, "combined": round(latency_p95_score, 1)},
+        },
+        "quality": {
+            "response_rate": {"value": resp_rate, "score": response_score},
+            "completion_rate": {"value": comp_rate, "score": completion_score},
+            "tool_engagement": {"value": tool_eng, "score": tool_score},
+        },
+        "reliability": {
+            "error_rate": {"value": error_rate, "score": error_score},
+        },
+        "vs_competitors": _compare_to_competitors(avg_ttfb, avg_total) if avg_ttfb > 0 else [],
+    }
+
+
 def generate_evaluation_template(rounds: list, goal: str = "") -> dict:
     """Generate an evaluation template with benchmarked latency scores pre-filled."""
     latency = score_match_latency(rounds)

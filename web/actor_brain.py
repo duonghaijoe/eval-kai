@@ -282,6 +282,29 @@ Return ONLY valid JSON, no markdown:
             logger.warning(f"Failed to parse JSON response: {text[:200]}")
             return fallback
 
+    def _derive_opening_message(self, goal: str) -> str:
+        """Derive a natural opening message from the goal without calling Claude CLI.
+
+        For turn 1 with no history, the opening message is straightforward:
+        extract the intent from the goal and phrase it as a direct question.
+        """
+        g = goal.lower().strip()
+        # Common patterns — map to natural first messages
+        if "greeting" in g or "hello" in g or "greet" in g:
+            return "Hello! What can you help me with?"
+        if "capabilities" in g or "what can you do" in g:
+            return "What are all the things you can do? List your capabilities."
+        if "requirement" in g:
+            return "Show me all available requirements in this project."
+        if "test case" in g or "generate test" in g:
+            return "Generate test cases for a login feature with email and password authentication."
+        if "insight" in g or "health" in g or "test result" in g:
+            return "Give me insights on the latest testing health and results for this project."
+        if "test run" in g or "execution" in g:
+            return "Show me the latest test run results."
+        # Generic: turn the goal into a question
+        return f"I need help with: {goal.rstrip('.')}. What can you do for me?"
+
     def _format_history(self, conversation_history: list) -> str:
         if not conversation_history:
             return "(no conversation yet - this is the first turn)"

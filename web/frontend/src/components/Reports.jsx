@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart3, TrendingUp, Clock, CheckCircle, Target, Brain, Shield, Star, Activity, ExternalLink, Timer, Zap } from 'lucide-react'
-import { getReports, formatDt } from '../api'
+import { getReports, getConfig, formatDt, formatMs, formatSec } from '../api'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts'
 
 const RING_COLORS = {
@@ -22,17 +22,19 @@ function ScoreDisplay({ value, max = 5 }) {
   return <span className={`score ${cls}`}>{v}/{max}</span>
 }
 
-function formatMs(ms) {
-  if (!ms || ms <= 0) return '-'
-  return `${Math.round(ms)}ms`
-}
 
 export default function Reports() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [ringFilter, setRingFilter] = useState('all')
+  const [ringFilter, setRingFilter] = useState(null)
+
+  // Default to active env
+  useEffect(() => {
+    getConfig().then(d => setRingFilter(d.active_env || 'production')).catch(() => setRingFilter('all'))
+  }, [])
 
   useEffect(() => {
+    if (ringFilter === null) return
     setLoading(true)
     getReports(ringFilter).then(setData).catch(() => {}).finally(() => setLoading(false))
   }, [ringFilter])
@@ -423,7 +425,7 @@ export default function Reports() {
                     <td>{s.max_turns}</td>
                     <td style={{ fontSize: '0.75rem' }}>
                       {s.started_at && s.ended_at
-                        ? `${((new Date(s.ended_at) - new Date(s.started_at)) / 1000).toFixed(0)}s`
+                        ? formatSec((new Date(s.ended_at) - new Date(s.started_at)) / 1000)
                         : s.status === 'running' ? <span className="spinner" /> : '-'
                       }
                     </td>

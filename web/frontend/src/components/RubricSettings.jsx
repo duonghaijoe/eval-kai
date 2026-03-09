@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { BookOpen, RotateCcw, Save, ChevronDown, ChevronRight, Timer, Target, Brain, Shield, Star, MessageSquare, CheckCircle, Wrench, Zap, Lock } from 'lucide-react'
 import { getRubric, updateRubric, resetRubric } from '../api'
-import { useAdmin } from '../App'
+import { useAdmin } from '../AdminContext'
 
 const DIMENSION_ICONS = {
   relevance: MessageSquare,

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Flame, Compass, GitMerge, FileCheck, Zap, ChevronRight, PlayCircle, Layers } from 'lucide-react'
-import { startSession, getScenarios, getConfig, createMatch } from '../api'
+import { Flame, Compass, GitMerge, FileCheck, Zap, ChevronRight, PlayCircle, Layers, Save, CheckCircle } from 'lucide-react'
+import { startSession, getScenarios, getConfig, createMatch, updateConfig } from '../api'
+import { useAdmin } from '../AdminContext'
 
 const MODES = [
   { id: 'fire', label: 'Fire', desc: 'Autonomous AI actor — fire and forget', icon: Flame, color: 'var(--red)' },
@@ -11,6 +12,7 @@ const MODES = [
 ]
 
 export default function SessionLauncher() {
+  const { admin } = useAdmin()
   const [mode, setMode] = useState('explore')
   const [goal, setGoal] = useState('')
   const [scenarioId, setScenarioId] = useState('')
@@ -21,12 +23,28 @@ export default function SessionLauncher() {
   const [scenarios, setScenarios] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
     getScenarios().then(d => setScenarios(d.scenarios || [])).catch(() => {})
-    getConfig().then(d => setEvalModel(d.eval_model || 'claude-sonnet-4-6')).catch(() => {})
+    getConfig().then(d => {
+      setEvalModel(d.eval_model || 'claude-sonnet-4-6')
+      if (d.default_max_turns) setMaxTurns(d.default_max_turns)
+      if (d.default_max_time) setMaxTime(d.default_max_time)
+    }).catch(() => {})
   }, [])
+
+  const handleSaveDefaults = async () => {
+    setSaving(true)
+    setSaved(false)
+    try {
+      await updateConfig({ default_max_turns: maxTurns, default_max_time: maxTime, eval_model: evalModel })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch {} finally { setSaving(false) }
+  }
 
   const categories = useMemo(() => {
     const cats = [...new Set(scenarios.map(s => s.category))]
@@ -279,8 +297,18 @@ export default function SessionLauncher() {
         )}
 
         <div className="card">
-          <h3>Ring Settings</h3>
-          <div className="form-row">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h3 style={{ margin: 0 }}>Ring Settings</h3>
+            {admin && (
+              <button type="button" onClick={handleSaveDefaults} disabled={saving}
+                style={{ fontSize: '0.72rem', padding: '0.3em 0.7em', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                {saving ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Saving...</>
+                  : saved ? <><CheckCircle size={12} style={{ color: 'var(--green)' }} /> Saved</>
+                  : <><Save size={12} /> Save as Default</>}
+              </button>
+            )}
+          </div>
+          <div className="form-row" style={{ marginTop: '0.75rem' }}>
             {mode !== 'fixed' && (
               <div>
                 <label>Max Exchanges</label>
