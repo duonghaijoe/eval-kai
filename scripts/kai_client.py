@@ -276,6 +276,23 @@ class KaiClient:
                         key, value = line.split("=", 1)
                         env[key] = value.strip('"').strip("'")
 
+        # If a pre-resolved token is available (e.g. from fire_runner), use it directly
+        pre_token = os.environ.get("KAI_TOKEN", "")
+        if pre_token:
+            base_url = kwargs.pop("base_url", None) or os.environ.get("KAI_BASE_URL", cls.DEFAULT_BASE_URL)
+            if "project_id" not in kwargs and os.environ.get("KAI_PROJECT_ID"):
+                kwargs["project_id"] = os.environ["KAI_PROJECT_ID"]
+            if "org_id" not in kwargs and os.environ.get("KAI_ORG_ID"):
+                kwargs["org_id"] = os.environ["KAI_ORG_ID"]
+            if "account_id" not in kwargs and os.environ.get("KAI_ACCOUNT_ID"):
+                kwargs["account_id"] = os.environ["KAI_ACCOUNT_ID"]
+            if "project_name" not in kwargs and os.environ.get("KAI_PROJECT_NAME"):
+                kwargs["project_name"] = os.environ["KAI_PROJECT_NAME"]
+            if "account_name" not in kwargs and os.environ.get("KAI_ACCOUNT_NAME"):
+                kwargs["account_name"] = os.environ["KAI_ACCOUNT_NAME"]
+            logger.info(f"Using pre-resolved KAI_TOKEN (skipping login)")
+            return cls(token=pre_token, base_url=base_url, **kwargs)
+
         # Env vars override .env file (fire_runner passes active profile via env vars)
         email = os.environ.get("TESTOPS_EMAIL") or env.get("TESTOPS_EMAIL", "")
         password = os.environ.get("TESTOPS_PASSWORD") or env.get("TESTOPS_PASSWORD", "")
@@ -462,6 +479,7 @@ class KaiClient:
         tools: Optional[list] = None,
         page_context: Optional[str] = None,
         conversation_history: Optional[list] = None,
+        on_poll=None,
     ) -> ChatResponse:
         """
         Send a message to Kai and wait for the response.
@@ -540,7 +558,7 @@ class KaiClient:
         }
 
         if response.status == "working":
-            self._poll_for_completion(thread_id, connect_payload, response, analytics, prior_event_count)
+            self._poll_for_completion(thread_id, connect_payload, response, analytics, prior_event_count, on_poll=on_poll)
 
         analytics.response_end = time.time()
         analytics.total_ms = (analytics.response_end - analytics.request_start) * 1000
@@ -587,7 +605,7 @@ class KaiClient:
 
     def _poll_for_completion(
         self, thread_id: str, payload: dict, response: ChatResponse, analytics: Analytics,
-        prior_event_count: int = 0,
+        prior_event_count: int = 0, on_poll=None,
     ):
         """Poll via /connect until agent completes, capturing response text.
 
@@ -595,9 +613,14 @@ class KaiClient:
         we track two timestamps:
         - TTFT: first poll that returns new history events (Kai started producing content)
         - Total: final poll when status is input-required (Kai finished)
+
+        Args:
+            on_poll: Optional callback(partial_text, tool_calls, status) called each poll
+                     cycle with any partial response text available so far.
         """
         poll_start = time.time()
         deadline = poll_start + self.poll_timeout
+        last_partial = ""
 
         while time.time() < deadline:
             time.sleep(self.poll_interval)
@@ -619,10 +642,51 @@ class KaiClient:
                     break
                 elif status != ConversationStatus.WORKING and status != "working":
                     break
+
+                # Extract partial text while still working and notify caller
+                if on_poll and status in (ConversationStatus.WORKING, "working"):
+                    partial = self._extract_partial_text(history, prior_event_count)
+                    if partial and partial != last_partial:
+                        last_partial = partial
+                        try:
+                            on_poll(partial, status)
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.warning(f"Poll error: {e}")
 
         analytics.poll_total_ms = (time.time() - poll_start) * 1000
+
+    def _extract_partial_text(self, history: list, prior_event_count: int = 0) -> str:
+        """Extract partial assistant text from historyEvents during polling."""
+        last_user_idx = -1
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_idx = i
+                break
+
+        if last_user_idx >= 0:
+            new_events = history[last_user_idx + 1:]
+        elif prior_event_count > 0:
+            new_events = history[prior_event_count + 1:]
+        else:
+            new_events = history
+
+        parts = []
+        for msg in new_events:
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    parts.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, str) and part.strip():
+                            parts.append(part)
+                        elif isinstance(part, dict) and part.get("type") == "text":
+                            text = part.get("text", "")
+                            if text.strip():
+                                parts.append(text)
+        return "\n".join(parts)
 
     def _extract_response(
         self, history: list, response: ChatResponse, analytics: Analytics,
@@ -630,15 +694,31 @@ class KaiClient:
     ):
         """Extract assistant reply and tool calls from historyEvents.
 
-        Only processes NEW events (after prior_event_count) to avoid
+        Only processes NEW events (after the last user message) to avoid
         re-capturing responses from previous turns in multi-turn conversations.
         """
         response.messages = history
 
-        # Only look at events that are NEW in this turn.
-        # The history grows each turn; prior_event_count tells us where old events end.
-        # +1 to also skip the user message we just sent (which is the last prior event).
-        new_events = history[prior_event_count + 1:] if prior_event_count > 0 else history
+        # Find the last user message in historyEvents to determine where the
+        # current turn starts. This is more reliable than prior_event_count
+        # because historyEvents includes tool messages, intermediate events, etc.
+        # that don't appear in our local conversation_history.
+        last_user_idx = -1
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_idx = i
+                break
+
+        if last_user_idx >= 0:
+            # Take everything after the last user message = current turn's response
+            new_events = history[last_user_idx + 1:]
+        elif prior_event_count > 0:
+            # Fallback: use prior_event_count if no user message found
+            new_events = history[prior_event_count + 1:]
+        else:
+            new_events = history
+
+        logger.debug(f"_extract_response: history={len(history)} last_user_idx={last_user_idx} prior={prior_event_count} new_events={len(new_events)}")
 
         # Pass 1: Extract tool calls from NEW events only
         for msg in new_events:
@@ -694,7 +774,7 @@ class KaiClient:
         # Also store tool_calls on the response object
         response.tool_calls = analytics.tool_calls
 
-        logger.info(f"Extracted response: {len(response.text)} chars, {len(analytics.tool_calls)} tool calls from {len(new_events)} new events (total history: {len(history)}, prior: {prior_event_count})")
+        logger.info(f"Extracted response: {len(response.text)} chars, {len(analytics.tool_calls)} tool calls from {len(new_events)} new events (total history: {len(history)}, last_user_idx: {last_user_idx}, prior: {prior_event_count})")
 
     def wait_for_ready(self, thread_id: str, timeout: float = 60.0) -> str:
         """Poll /connect until Kai status is 'input-required' (ready for next message).

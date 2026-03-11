@@ -208,6 +208,20 @@ export async function bulkDeleteMatches(ids) {
   return res.json();
 }
 
+export async function deleteMatchesByDate({ before, after, older_than_days } = {}) {
+  const res = await fetch(`${BASE}/api/matches/delete-by-date`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ before, after, older_than_days }),
+  });
+  if (res.status === 401) throw new Error('Admin login required');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to delete');
+  }
+  return res.json();
+}
+
 // Legacy
 export async function runAllFixed(opts) {
   return createMatch(opts);
@@ -510,6 +524,231 @@ export async function completeJoeBotAuth(code) {
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
+
+// ── Jira Integration ────────────────────────────────────────────
+
+export async function getJiraConfig() {
+  const res = await fetch(`${BASE}/api/jira/config`)
+  return res.json()
+}
+
+export async function updateJiraConfig(config) {
+  const res = await fetch(`${BASE}/api/jira/config`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(config),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to update Jira config')
+  }
+  return res.json()
+}
+
+export async function testJiraConnection() {
+  const res = await fetch(`${BASE}/api/jira/test`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  return res.json()
+}
+
+export async function logJiraBug(sessionId, turnNumber, force = false) {
+  const res = await fetch(`${BASE}/api/jira/log-bug`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ session_id: sessionId, turn_number: turnNumber, force }),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to log bug')
+  }
+  return res.json()
+}
+
+export async function logJiraSessionBug(sessionId, force = false) {
+  const res = await fetch(`${BASE}/api/jira/log-session-bug`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ session_id: sessionId, force }),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to log bug')
+  }
+  return res.json()
+}
+
+export async function getSessionTickets(sessionId) {
+  const res = await fetch(`${BASE}/api/jira/tickets/${sessionId}`)
+  return res.json()
+}
+
+export async function getJiraFilterUrl() {
+  const res = await fetch(`${BASE}/api/jira/filter-url`)
+  return res.json()
+}
+
+// ── Scenario Submissions ─────────────────────────────────────────
+
+export async function submitScenario(data) {
+  const res = await fetch(`${BASE}/api/scenarios/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to submit scenario')
+  }
+  return res.json()
+}
+
+export async function getSubmissions(status) {
+  const params = status ? `?status=${status}` : ''
+  const res = await fetch(`${BASE}/api/scenarios/submissions${params}`)
+  return res.json()
+}
+
+export async function approveSubmission(id) {
+  const res = await fetch(`${BASE}/api/scenarios/submissions/${id}/approve`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to approve')
+  }
+  return res.json()
+}
+
+export async function rejectSubmission(id, reason = '') {
+  const res = await fetch(`${BASE}/api/scenarios/submissions/${id}/reject`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ reason }),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to reject')
+  }
+  return res.json()
+}
+
+export async function createCustomScenario(data) {
+  const res = await fetch(`${BASE}/api/scenarios/custom`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to create scenario')
+  }
+  return res.json()
+}
+
+export async function updateCustomScenario(id, data) {
+  const res = await fetch(`${BASE}/api/scenarios/custom/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to update scenario')
+  }
+  return res.json()
+}
+
+export async function hideScenario(id) {
+  const res = await fetch(`${BASE}/api/scenarios/${id}/hide`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to hide scenario')
+  return res.json()
+}
+
+export async function unhideScenario(id) {
+  const res = await fetch(`${BASE}/api/scenarios/${id}/unhide`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to unhide scenario')
+  return res.json()
+}
+
+export async function deleteCustomScenario(id) {
+  const res = await fetch(`${BASE}/api/scenarios/custom/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete')
+  return res.json()
+}
+
+// ── Notifications ────────────────────────────────────────────────
+
+export async function getNotifications() {
+  const res = await fetch(`${BASE}/api/notifications`)
+  return res.json()
+}
+
+export async function createNotification(data) {
+  const res = await fetch(`${BASE}/api/notifications`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Failed to create notification')
+  return res.json()
+}
+
+export async function deleteNotification(id) {
+  const res = await fetch(`${BASE}/api/notifications/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete notification')
+  return res.json()
+}
+
+// ── Feedback ────────────────────────────────────────────────────
+
+export async function submitFeedback(data) {
+  const res = await fetch(`${BASE}/api/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to submit feedback')
+  }
+  return res.json()
+}
+
+export async function getFeedback() {
+  const res = await fetch(`${BASE}/api/feedback`)
+  return res.json()
+}
+
+export async function deleteFeedback(id) {
+  const res = await fetch(`${BASE}/api/feedback/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to delete feedback')
+  return res.json()
+}
+
 
 export function connectWebSocket(sessionId = null) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

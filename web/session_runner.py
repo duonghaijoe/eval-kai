@@ -50,8 +50,13 @@ def invalidate_client_cache():
 
 
 def get_fixed_scenarios():
-    """Return available fixed scenarios from kai_actor.py."""
-    return [
+    """Return available fixed scenarios from kai_actor.py + custom DB scenarios, excluding hidden."""
+    try:
+        hidden_ids = set(db.list_hidden_scenarios())
+    except Exception:
+        hidden_ids = set()
+
+    builtin = [
         {
             "id": s.id,
             "name": s.name,
@@ -59,9 +64,34 @@ def get_fixed_scenarios():
             "category": s.category,
             "steps": [{"name": st.name, "message": st.message} for st in s.steps],
             "tags": s.tags,
+            "source": "builtin",
         }
         for s in SCENARIOS
+        if s.id not in hidden_ids
     ]
+    # Merge custom scenarios from DB
+    try:
+        custom = db.list_custom_scenarios()
+        for cs in custom:
+            if cs["id"] not in hidden_ids:
+                builtin.append({
+                    "id": cs["id"],
+                    "name": cs["name"],
+                    "description": cs["description"],
+                    "category": cs["category"],
+                    "steps": cs["steps"] if isinstance(cs["steps"], list) else [],
+                    "tags": cs["tags"] if isinstance(cs["tags"], list) else [],
+                    "source": "custom",
+                })
+    except Exception as e:
+        logger.warning(f"Failed to load custom scenarios: {e}")
+    return builtin
+
+
+def strip_brackets(message: str) -> str:
+    """Strip [bracketed notes] from a message before sending to Kai."""
+    import re
+    return re.sub(r'\s*\[.*?\]', '', message).strip()
 
 
 async def run_session(
@@ -163,12 +193,23 @@ async def _execute_session(
     plan = None
 
     if actor_mode == "fixed":
+        # Check hardcoded scenarios first, then custom DB scenarios
         scenario = next((s for s in SCENARIOS if s.id == scenario_id), None)
-        if not scenario:
-            raise ValueError(f"Scenario {scenario_id} not found")
-        messages = [step.message for step in scenario.steps]
+        if scenario:
+            messages = [step.message for step in scenario.steps]
+            goal = goal or scenario.description
+        else:
+            # Check custom scenarios from DB
+            custom_scenarios = db.list_custom_scenarios()
+            custom = next((cs for cs in custom_scenarios if cs["id"] == scenario_id), None)
+            if not custom:
+                raise ValueError(f"Scenario {scenario_id} not found")
+            steps = custom["steps"] if isinstance(custom["steps"], list) else []
+            messages = [s.get("message", "") for s in steps]
+            goal = goal or custom["description"]
+        # Strip [bracketed notes] from messages before sending
+        messages = [strip_brackets(m) for m in messages]
         max_turns = len(messages)
-        goal = goal or scenario.description
     elif actor_mode == "hybrid":
         plan = await brain.generate_hybrid_plan(goal, max_turns)
         messages = plan
@@ -219,11 +260,49 @@ async def _execute_session(
                 "user_message": message,
             })
 
-        # Wait for Kai to be ready before sending (prevents "invalid request" errors)
+        # Wait for Kai to be fully ready before sending next message
         if thread_id:
-            ready_status = await asyncio.to_thread(kai_client.wait_for_ready, thread_id)
+            ready_status = await asyncio.to_thread(kai_client.wait_for_ready, thread_id, 120.0)
             if ready_status == "timeout":
-                logger.warning(f"Session {session_id} turn {turn_num}: Kai not ready after timeout, attempting anyway")
+                logger.error(f"Session {session_id} turn {turn_num}: Kai still working after 120s, skipping turn")
+                db.update_turn_response(
+                    session_id=session_id, turn_number=turn_num,
+                    assistant_response="", status="error",
+                    ttfb_ms=0, total_ms=0, poll_count=0, tool_calls=[],
+                    error="Kai was still processing the previous response (timeout waiting for input-required)",
+                    eval_latency={"grade": "F", "ttfb_grade": "F", "total_grade": "F"},
+                )
+                if on_turn:
+                    await _safe_callback(on_turn, session_id, {
+                        "type": "turn_complete", "turn_number": turn_num,
+                        "user_message": message, "assistant_response": "",
+                        "status": "error", "ttfb_ms": 0, "total_ms": 0,
+                        "poll_count": 0, "tool_calls": [],
+                        "error": "Kai still processing previous response",
+                        "eval": {}, "eval_latency": {"grade": "F"},
+                    })
+                continue
+            elif ready_status == "error":
+                logger.warning(f"Session {session_id} turn {turn_num}: Kai in error state, proceeding with new message")
+
+        # Simulate typing delay between exchanges (skip before first turn)
+        if turn_num > 1:
+            await asyncio.sleep(2)
+
+        # Build poll callback to stream partial responses via WebSocket
+        _poll_loop = asyncio.get_event_loop()
+
+        def _on_poll(partial_text, status):
+            if on_turn and partial_text:
+                asyncio.run_coroutine_threadsafe(
+                    _safe_callback(on_turn, session_id, {
+                        "type": "turn_streaming",
+                        "turn_number": turn_num,
+                        "user_message": message,
+                        "partial_response": partial_text,
+                    }),
+                    _poll_loop,
+                )
 
         # Send to Kai
         chat_result = await asyncio.to_thread(
@@ -233,10 +312,16 @@ async def _execute_session(
             None,  # tools
             None,  # page_context
             conversation_history if thread_id else None,
+            _on_poll,  # on_poll callback for partial responses
         )
 
         thread_id = chat_result.thread_id
         db.update_session(session_id, thread_id=thread_id)
+
+        # Verify Kai actually finished responding before proceeding
+        if chat_result.status == "working":
+            logger.warning(f"Session {session_id} turn {turn_num}: chat() returned but Kai still working (poll timeout). Marking as incomplete.")
+            chat_result.analytics.error_message = (chat_result.analytics.error_message or "") + " [Kai response may be incomplete — poll timeout reached]"
 
         # Update conversation history
         conversation_history.append({
@@ -311,6 +396,17 @@ async def _execute_session(
                     "eval": eval_scores,
                     "eval_latency": latency_score,
                 })
+
+            # Auto-log Jira bug if thresholds are met
+            try:
+                from jira_integration import should_auto_log, log_bug_for_round
+                turn_data = db.get_turns(session_id, turn_num)
+                if turn_data and should_auto_log(turn_data):
+                    jira_result = await asyncio.to_thread(log_bug_for_round, session_id, turn_num)
+                    if jira_result.get("ok"):
+                        logger.info(f"Auto-logged Jira bug {jira_result.get('ticket_key')} for session {session_id} round {turn_num}")
+            except Exception as e:
+                logger.debug(f"Jira auto-log skipped: {e}")
 
         # Rate limit between turns
         await asyncio.sleep(1)

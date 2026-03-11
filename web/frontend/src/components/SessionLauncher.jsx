@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Flame, Compass, GitMerge, FileCheck, Zap, ChevronRight, PlayCircle, Layers, Save, CheckCircle } from 'lucide-react'
-import { startSession, getScenarios, getConfig, createMatch, updateConfig } from '../api'
+import { useNavigate, Link } from 'react-router-dom'
+import { Flame, Compass, GitMerge, FileCheck, Zap, ChevronRight, PlayCircle, Layers, Save, CheckCircle, Plus, Trash2, Send, MessageSquare, BookOpen } from 'lucide-react'
+import { startSession, getScenarios, getConfig, createMatch, updateConfig, submitScenario } from '../api'
 import { useAdmin } from '../AdminContext'
 
 const MODES = [
@@ -115,6 +115,48 @@ export default function SessionLauncher() {
 
   const selectedScenario = scenarios.find(s => s.id === scenarioId)
 
+  // Submission form state
+  const [showSubmit, setShowSubmit] = useState(false)
+  const [subName, setSubName] = useState('')
+  const [subDesc, setSubDesc] = useState('')
+  const [subCategory, setSubCategory] = useState('happy')
+  const [subTags, setSubTags] = useState('')
+  const [subRequester, setSubRequester] = useState('')
+  const [subSteps, setSubSteps] = useState([{ name: 'Step 1', message: '' }])
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+
+  const addStep = () => setSubSteps([...subSteps, { name: `Step ${subSteps.length + 1}`, message: '' }])
+  const removeStep = (i) => setSubSteps(subSteps.filter((_, idx) => idx !== i))
+  const updateStep = (i, field, val) => {
+    const copy = [...subSteps]
+    copy[i] = { ...copy[i], [field]: val }
+    setSubSteps(copy)
+  }
+
+  const handleSubmitScenario = async () => {
+    if (!subName.trim() || !subDesc.trim() || subSteps.every(s => !s.message.trim())) return
+    setSubmitting(true)
+    try {
+      await submitScenario({
+        name: subName,
+        description: subDesc,
+        category: subCategory,
+        steps: subSteps.filter(s => s.message.trim()),
+        tags: subTags ? subTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+        submitted_by: subRequester.trim() || 'anonymous',
+      })
+      setSubmitted(true)
+      setSubName(''); setSubDesc(''); setSubCategory('happy'); setSubTags(''); setSubRequester('')
+      setSubSteps([{ name: 'Step 1', message: '' }])
+      setTimeout(() => { setSubmitted(false); setShowSubmit(false) }, 2500)
+    } catch (e) {
+      alert('Failed: ' + e.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div>
       <div className="page-header">
@@ -162,7 +204,12 @@ export default function SessionLauncher() {
 
       <form onSubmit={handleSubmit}>
         <div className="card">
-          <h3>Fighter Mode</h3>
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            Fighter Mode
+            <Link to="/guideline#fight-modes" style={{ fontSize: '0.7rem', color: 'var(--accent)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.2rem', fontWeight: 400 }}>
+              <BookOpen size={12} /> Under the Hood
+            </Link>
+          </h3>
           <div className="mode-grid">
             {MODES.map(m => {
               const Icon = m.icon
@@ -266,7 +313,7 @@ export default function SessionLauncher() {
               <option value="">Select a scenario for single round...</option>
               {filteredScenarios.map(s => (
                 <option key={s.id} value={s.id}>
-                  [{s.category}] {s.name} ({s.steps.length} exchanges)
+                  [{s.category}] {s.name} ({s.steps.length} exchanges){s.source === 'custom' ? ' ★' : ''}
                 </option>
               ))}
             </select>
@@ -274,12 +321,23 @@ export default function SessionLauncher() {
             {/* Scenario preview */}
             {selectedScenario && (
               <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                <div><strong>{selectedScenario.name}</strong> — {selectedScenario.description}</div>
+                <div>
+                  <strong>{selectedScenario.name}</strong> — {selectedScenario.description}
+                  {selectedScenario.source === 'custom' && (
+                    <span style={{ marginLeft: '0.4rem', fontSize: '0.62rem', padding: '0.1em 0.35em', background: 'var(--accent)', color: '#fff', borderRadius: 3 }}>community</span>
+                  )}
+                </div>
                 <div style={{ marginTop: '0.5rem' }}>
                   {selectedScenario.steps.map((s, i) => (
                     <div key={i} style={{ marginTop: '0.25rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'flex-start', gap: '0.35rem' }}>
                       <ChevronRight size={12} style={{ marginTop: '0.15rem', flexShrink: 0 }} />
-                      <span>{s.message.slice(0, 100)}</span>
+                      <span>
+                        {s.message.split(/(\[.*?\])/).map((part, j) =>
+                          part.startsWith('[') && part.endsWith(']')
+                            ? <span key={j} style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.72rem', opacity: 0.7 }}>{part}</span>
+                            : <span key={j}>{part}</span>
+                        )}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -287,12 +345,110 @@ export default function SessionLauncher() {
             )}
 
             {/* Scenario count summary */}
-            <div style={{ marginTop: '0.75rem', padding: '0.6rem 0.75rem', background: 'var(--bg-primary)', borderRadius: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-              <Layers size={13} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />
-              <strong>{filteredScenarios.length}</strong> rounds
-              {fixedCategory && <> in <strong>{fixedCategory}</strong></>}
-              {' '}— {filteredScenarios.reduce((sum, s) => sum + s.steps.length, 0)} total exchanges
+            <div style={{ marginTop: '0.75rem', padding: '0.6rem 0.75rem', background: 'var(--bg-primary)', borderRadius: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>
+                <Layers size={13} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />
+                <strong>{filteredScenarios.length}</strong> rounds
+                {fixedCategory && <> in <strong>{fixedCategory}</strong></>}
+                {' '}— {filteredScenarios.reduce((sum, s) => sum + s.steps.length, 0)} total exchanges
+              </span>
+              <button type="button" onClick={() => setShowSubmit(!showSubmit)}
+                style={{ fontSize: '0.72rem', padding: '0.25em 0.6em', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <MessageSquare size={12} /> Suggest Scenario
+              </button>
             </div>
+
+            {/* Scenario Submission Form */}
+            {showSubmit && (
+              <div style={{ marginTop: '0.75rem', padding: '1rem', background: 'var(--bg-primary)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                <h4 style={{ fontSize: '0.85rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <Send size={14} /> Suggest a New Scenario
+                </h4>
+                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                  Submit a scenario for review. Once approved by an admin, it becomes available in Fixed mode for everyone.
+                  Use <code style={{ background: 'var(--bg-hover)', padding: '0.1em 0.3em', borderRadius: 3 }}>[brackets]</code> in messages for notes — they'll be stripped before sending to Kai.
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '0.2rem' }}>Scenario Name</label>
+                    <input value={subName} onChange={e => setSubName(e.target.value)}
+                      placeholder="e.g., Test Cloud Configuration Check" style={{ fontSize: '0.78rem', width: '100%' }} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                    <div>
+                      <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '0.2rem' }}>Category</label>
+                      <select value={subCategory} onChange={e => setSubCategory(e.target.value)} style={{ fontSize: '0.78rem', width: '100%' }}>
+                        {['happy', 'edge', 'multi-turn', 'stress', 'functional', 'guardrails'].map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '0.2rem' }}>Tags</label>
+                      <input value={subTags} onChange={e => setSubTags(e.target.value)}
+                        placeholder="smoke, api, core" style={{ fontSize: '0.78rem', width: '100%' }} />
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '0.2rem' }}>Description</label>
+                    <input value={subDesc} onChange={e => setSubDesc(e.target.value)}
+                      placeholder="Brief description of what this scenario tests" style={{ fontSize: '0.78rem', width: '100%' }} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '0.2rem' }}>Your Name</label>
+                    <input value={subRequester} onChange={e => setSubRequester(e.target.value)}
+                      placeholder="anonymous" style={{ fontSize: '0.78rem', width: '100%' }} />
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '0.5rem' }}>
+                  <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '0.3rem' }}>
+                    Exchanges ({subSteps.length})
+                  </label>
+                  {subSteps.map((step, i) => (
+                    <div key={i} style={{ display: 'flex', gap: '0.35rem', marginBottom: '0.35rem', alignItems: 'flex-start' }}>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.5rem', minWidth: 20, textAlign: 'right' }}>
+                        {i + 1}.
+                      </span>
+                      <input value={step.name} onChange={e => updateStep(i, 'name', e.target.value)}
+                        placeholder="Step name" style={{ fontSize: '0.75rem', width: 120 }} />
+                      <input value={step.message} onChange={e => updateStep(i, 'message', e.target.value)}
+                        placeholder="Message to send [optional notes in brackets]" style={{ fontSize: '0.75rem', flex: 1 }} />
+                      {subSteps.length > 1 && (
+                        <button type="button" onClick={() => removeStep(i)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0.35rem', color: 'var(--text-muted)' }}>
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button type="button" onClick={addStep}
+                    style={{ fontSize: '0.7rem', padding: '0.2em 0.5em', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                    <Plus size={11} /> Add Exchange
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <button type="button" onClick={handleSubmitScenario} className="primary" disabled={submitting || !subName.trim() || !subDesc.trim()}
+                    style={{ fontSize: '0.75rem', padding: '0.4em 1em' }}>
+                    {submitting ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Submitting...</>
+                      : submitted ? <><CheckCircle size={12} /> Submitted!</>
+                      : <><Send size={12} /> Submit for Review</>}
+                  </button>
+                  <button type="button" onClick={() => setShowSubmit(false)}
+                    style={{ fontSize: '0.72rem', padding: '0.4em 0.8em' }}>Cancel</button>
+                  {submitted && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--green)' }}>
+                      Submitted! An admin will review your scenario.
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

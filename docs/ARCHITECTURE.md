@@ -1,6 +1,6 @@
 # Architecture Document
 
-## Kai Quality Sandbox — System Architecture
+## Kai Quality Sandbox — System Architecture (v2.0)
 
 ---
 
@@ -12,25 +12,31 @@ graph TB
         UI[Dashboard UI]
         WS_C[WebSocket Client]
         API_C[REST Client]
+        JOE[Ask Joe Chatbot]
     end
 
     subgraph Server["FastAPI Server :8000"]
         REST[REST API Layer]
         WSM[WebSocket Manager]
         AUTH[Admin Auth]
+        NOTIFY[Notification Engine]
     end
 
     subgraph Core["Core Engine"]
         SR[Session Runner]
         FR[Fire Runner]
+        SF[Superfight Runner]
         AB[Actor Brain]
         RB[Rubric Engine]
+        LTU[Load Test Users]
     end
 
     subgraph External["External Services"]
         KAI[Kai Agent API]
         CLAUDE[Claude Code CLI]
         LOGIN[TestOps Login API]
+        JIRA[Jira Cloud API]
+        PLATFORM[Katalon Platform API]
     end
 
     subgraph Storage["Persistence"]
@@ -41,20 +47,28 @@ graph TB
 
     UI --> API_C --> REST
     UI --> WS_C --> WSM
+    JOE --> REST
 
     REST --> SR
     REST --> FR
+    REST --> SF
     REST --> AUTH
+    REST --> NOTIFY
     SR --> AB
     SR --> RB
     FR --> CLAUDE
+    SF --> LTU
 
     SR --> KAI
     AB --> CLAUDE
     SR --> LOGIN
+    SF --> KAI
+    REST --> JIRA
+    LTU --> PLATFORM
 
     SR --> DB
     FR --> DB
+    SF --> DB
     RB --> RUBRIC
     DB --> VOL
 ```
@@ -74,7 +88,14 @@ graph LR
         R3[MatchList / MatchReport]
         R4[MatchTrends / Reports]
         R5[RubricSettings]
-        R6[EnvironmentSettings]
+        R6[EnvironmentSettings<br/>3-tab: Sandbox / Scenarios / Pool]
+        R7[SuperfightArena]
+        R8[LoadTestUsers]
+        R9[Guideline — Fight Manual]
+        R10[AskJoePanel — AI Chatbot]
+        R11[NotificationPanel]
+        R12[FeedbackPanel]
+        R13[ConfirmModal]
     end
 
     subgraph API["API Layer (FastAPI)"]
@@ -84,6 +105,11 @@ graph LR
         A3[Config Endpoints]
         A4[Report Endpoints]
         A5[WebSocket Endpoints]
+        A6[Scenario CRUD Endpoints]
+        A7[Superfight Endpoints]
+        A8[Jira Integration Endpoints]
+        A9[Ask Joe Endpoint]
+        A10[Notification / Feedback]
     end
 
     subgraph Business["Business Logic"]
@@ -93,11 +119,15 @@ graph LR
         B3[Actor Brain]
         B4[Rubric Engine]
         B5[Env Config Manager]
+        B6[Superfight Runner]
+        B7[Load Test User Provisioner]
+        B8[Jira Integration]
+        B9[Kai Benchmarks]
     end
 
     subgraph Data["Data Layer"]
         direction TB
-        D1[Database CRUD]
+        D1[Database CRUD — 13 tables]
         D2[Token Cache]
         D3[Rubric Storage]
     end
@@ -109,37 +139,51 @@ graph LR
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| **REST API** | `server.py` | HTTP endpoints, request validation, admin auth |
+| **REST API** | `server.py` | 50+ HTTP endpoints, request validation, admin auth |
 | **WebSocket Manager** | `server.py` | Real-time event broadcasting to connected clients |
-| **Session Runner** | `session_runner.py` | Orchestrates test sessions: message flow, evaluation, DB writes |
+| **Session Runner** | `session_runner.py` | Orchestrates test sessions: message flow, turn sequencing, evaluation, DB writes |
 | **Fire Runner** | `fire_runner.py` | Autonomous Claude Code sessions for fire mode |
+| **Superfight Runner** | `superfight_runner.py` | Load test executor: concurrent bouts, metrics collection, benchmarking |
 | **Actor Brain** | `actor_brain.py` | Claude CLI wrapper for message decisions and evaluations |
 | **Rubric Engine** | `rubric.py` | Scoring criteria, latency thresholds, weight management |
+| **Kai Benchmarks** | `kai_benchmarks.py` | Latency grading (A+ to F), quality scoring for load tests |
 | **Env Config** | `env_config.py` | Multi-environment credential and URL management |
-| **Database** | `database.py` | SQLite CRUD operations, schema migrations |
+| **Database** | `database.py` | SQLite CRUD operations, 13 tables, schema migrations |
 | **Kai Client** | `kai_client.py` | Kai API protocol implementation (CopilotKit polling) |
 | **Kai Actor** | `kai_actor.py` | Predefined test scenario definitions |
+| **Jira Integration** | `jira_integration.py` | Bug logging, duplicate detection, assignee routing |
+| **Load Test Users** | `load_test_users.py` | Test user provisioning via Katalon Platform API |
 
 ### 2.3 Frontend Components
 
 ```mermaid
 graph TD
     App[App.jsx<br/>Layout + Router + AdminContext] --> SL[SessionLauncher<br/>New Match / Quick Test]
-    App --> SList[SessionList<br/>Browse + Filter + Bulk Delete]
-    App --> SD[SessionDetail<br/>Real-time Turn Viewer]
-    App --> ML[MatchList<br/>Browse + Rerun + Bulk Delete]
+    App --> SList[SessionList<br/>Browse + Filter + Bulk Delete + Jira]
+    App --> SD[SessionDetail<br/>Real-time Turn Viewer + Jira]
+    App --> ML[MatchList<br/>Browse + Rerun + Date Cleanup]
     App --> MR[MatchReport<br/>Per-Scenario Breakdown]
-    App --> MT[MatchTrends<br/>Trend Charts + Ask Joe]
+    App --> MT[MatchTrends<br/>Trend Charts + AI Analysis]
     App --> RP[Reports<br/>Aggregate Dashboards]
     App --> RS[RubricSettings<br/>Edit Scoring Criteria]
-    App --> ES[EnvironmentSettings<br/>Multi-Env + Concurrency]
+    App --> ES[EnvironmentSettings<br/>3-Tab: Sandbox / Scenarios / Pool]
+    App --> SA[SuperfightArena<br/>Load Test Control Panel]
+    App --> LTU[LoadTestUsers<br/>Fighter Provisioning]
+    App --> GL[Guideline<br/>Fight Manual]
+    App --> NP[NotificationPanel<br/>Feature Announcements]
+    App --> FP[FeedbackPanel<br/>User Feedback]
+    App --> AJ[AskJoePanel<br/>Floating AI Chatbot]
+    App --> CM[ConfirmModal<br/>Reusable Danger Dialog]
 
     SL -->|POST /api/sessions| API[api.js]
     SL -->|POST /api/matches| API
     SD -->|WebSocket /ws/id| WS[WebSocket]
-    ML -->|GET /api/matches| API
+    ML -->|GET+DELETE /api/matches| API
     MR -->|GET /api/matches/id| API
     MT -->|POST /api/match-trends/analyze| API
+    AJ -->|POST /api/ask-joe| API
+    SA -->|POST /api/superfight/start| API
+    ES -->|CRUD /api/scenarios| API
 ```
 
 ---
@@ -153,6 +197,8 @@ erDiagram
     MATCHES ||--o{ SESSIONS : contains
     SESSIONS ||--o{ TURNS : has
     SESSIONS ||--o| EVALUATIONS : evaluated_by
+    SESSIONS ||--o{ JIRA_TICKETS : linked_to
+    SUPERFIGHTS ||--o{ BOUTS : contains
 
     MATCHES {
         text id PK
@@ -185,7 +231,6 @@ erDiagram
         text started_at
         text ended_at
         text stop_reason
-        text env_info
     }
 
     TURNS {
@@ -220,6 +265,66 @@ erDiagram
         text rubric_weights
     }
 
+    CUSTOM_SCENARIOS {
+        text id PK
+        text name
+        text description
+        text category
+        text steps_json
+        text tags_json
+        text source
+        text created_by
+    }
+
+    HIDDEN_SCENARIOS {
+        text id PK
+        text hidden_by
+        text created_at
+    }
+
+    SCENARIO_SUBMISSIONS {
+        text id PK
+        text name
+        text description
+        text category
+        text steps_json
+        text tags
+        text status
+        text submitted_by
+        text reviewed_by
+    }
+
+    NOTIFICATIONS {
+        text id PK
+        text type
+        text title
+        text message
+        text link
+        text created_at
+    }
+
+    FEEDBACK {
+        text id PK
+        text type
+        text name
+        text message
+        text created_at
+    }
+
+    JIRA_TICKETS {
+        text ticket_key PK
+        text session_id FK
+        int turn_number
+        text created_at
+    }
+
+    JIRA_CONFIG {
+        text key PK
+        text base_url
+        text project_key
+        text auth_token
+    }
+
     ENV_PROFILES {
         text key PK
         text name
@@ -230,16 +335,33 @@ erDiagram
         text org_id
         text cred_email
         text cred_password
-        text cred_account
         int is_active
     }
 
     TOKEN_CACHE {
         text env_key PK
-        text email
-        text platform_url
         text token
         real expires_at
+    }
+
+    LOAD_TEST_USERS {
+        text email PK
+        text env_key
+        text password
+        text status
+        text registered_at
+    }
+
+    SUPERFIGHTS {
+        text id PK
+        text weight_class
+        text env_key
+        text fight_mode
+        int num_fighters
+        int windows_per_fighter
+        text status
+        text metrics_json
+        text benchmark_json
     }
 ```
 
@@ -252,6 +374,7 @@ erDiagram
 | Foreign Keys | Enabled |
 | Location | `web/data/kai_tests.db` |
 | Persistence | Docker volume `kai-data` |
+| Tables | 13 tables |
 | Migrations | Auto-applied on startup (ALTER TABLE IF NOT EXISTS) |
 
 ---
@@ -291,6 +414,36 @@ sequenceDiagram
 - **Tool calls**: Extracted from `historyEvents` entries with `role: "tool"` or `toolCalls` array
 - **Response concatenation**: All assistant messages concatenated (forward order) from `historyEvents`
 
+### Turn Sequencing (v2.0)
+
+```mermaid
+sequenceDiagram
+    participant SR as Session Runner
+    participant KC as Kai Client
+    participant Kai as Kai Agent
+
+    SR->>KC: wait_for_ready(thread_id, 120s)
+    KC->>Kai: Poll /connect until input-required
+    alt Ready
+        Kai-->>KC: status: input-required
+        KC-->>SR: ready
+        SR->>SR: Sleep 2s (typing delay)
+        SR->>KC: chat(message)
+    else Timeout (120s)
+        KC-->>SR: timeout
+        SR->>SR: Skip turn with error
+        Note right of SR: Continue to next turn
+    else Error
+        KC-->>SR: error
+        SR->>SR: Proceed with new message
+    end
+```
+
+Three-layer protection against overlapping requests:
+1. **wait_for_ready** — polls Kai before sending next message (120s timeout)
+2. **chat() polls** — waits for complete response during send
+3. **Post-chat verification** — flags incomplete responses if status still "working"
+
 ### Authentication Chain
 
 ```mermaid
@@ -319,7 +472,7 @@ flowchart TD
     SEM --> INIT[Init KaiClient + ActorBrain<br/>cached singletons]
 
     INIT --> MODE{Actor Mode?}
-    MODE -->|fixed| FIXED[Load Scenario Steps]
+    MODE -->|fixed| FIXED[Load Scenario Steps<br/>builtin or custom]
     MODE -->|explore| EXPLORE[AI Decides Message]
     MODE -->|hybrid| HYBRID[Generate Plan → AI Adapts]
 
@@ -329,15 +482,29 @@ flowchart TD
 
     subgraph LOOP["Turn Loop"]
         direction TB
-        CHECK[Check Time/Turn Limits] --> MSG[Get Message]
-        MSG --> WS1[Broadcast turn_start]
+        CHECK[Check Time/Turn Limits] --> READY[wait_for_ready<br/>120s timeout]
+        READY -->|ready| DELAY[Sleep 2s Typing Delay]
+        READY -->|timeout| SKIP[Skip Turn with Error]
+        DELAY --> MSG[Get Message]
+        MSG --> PENDING[Save Pending Turn to DB]
+        PENDING --> WS1[Broadcast turn_start]
         WS1 --> SEND[Send to Kai via Client]
-        SEND --> EVAL_T[Evaluate Turn via Claude]
-        EVAL_T --> SCORE_L[Auto-Score Latency]
-        SCORE_L --> SAVE_T[Save Turn to DB]
+        SEND --> VERIFY{Status == working?}
+        VERIFY -->|yes| FLAG[Flag as Incomplete]
+        VERIFY -->|no| OK[Response Complete]
+        FLAG --> SCORE
+        OK --> SCORE
+        SCORE --> SCORE_L[Auto-Score Latency]
+        SCORE_L --> SAVE_T[Update Turn in DB]
         SAVE_T --> WS2[Broadcast turn_complete]
-        WS2 --> SLEEP[Sleep 1s Rate Limit]
+        WS2 --> EVAL_T[Evaluate Turn via Claude]
+        EVAL_T --> WS_SCORE[Broadcast turn_scored]
+        WS_SCORE --> JIRA{Auto-log Jira?}
+        JIRA -->|threshold met| LOG[Log Bug to Jira]
+        JIRA -->|no| SLEEP[Sleep 1s Rate Limit]
+        LOG --> SLEEP
         SLEEP --> CHECK
+        SKIP --> CHECK
     end
 
     LOOP --> EVAL_S[Evaluate Session via Claude]
@@ -375,8 +542,8 @@ flowchart TD
 flowchart TD
     MATCH[POST /api/matches] --> CREATE[Create Match Record]
     CREATE --> FILTER{Category Filter?}
-    FILTER -->|yes| SUBSET[Filter Scenarios]
-    FILTER -->|no| ALL[All 24 Scenarios]
+    FILTER -->|yes| SUBSET[Filter Scenarios<br/>builtin + custom, excl. hidden]
+    FILTER -->|no| ALL[All Scenarios]
 
     SUBSET --> LAUNCH
     ALL --> LAUNCH
@@ -396,6 +563,30 @@ flowchart TD
     PAR --> AGG[Aggregate Results]
     AGG --> EVAL_M[Evaluate Match<br/>pass_rate, overall_score]
     EVAL_M --> DONE[Update Match → completed]
+```
+
+### 5.4 Superfight (Load Test) Execution
+
+```mermaid
+flowchart TD
+    START[POST /api/superfight/start] --> CONFIG[Select Weight Class<br/>+ Fighters + xPower]
+    CONFIG --> PROVISION[Verify Provisioned Users]
+    PROVISION --> RAMP[Ramp-up Phase]
+
+    RAMP --> BOUTS["Launch N×M Concurrent Bouts"]
+
+    subgraph BOUTS
+        direction TB
+        B1[Fighter 1 × Window 0] --> R1[Execute Rounds]
+        B2[Fighter 1 × Window 1] --> R2[Execute Rounds]
+        B3[Fighter 2 × Window 0] --> R3[Execute Rounds]
+        BN[...] --> RN[...]
+    end
+
+    BOUTS --> COLLECT[Collect Metrics per Bout]
+    COLLECT --> AGG[Aggregate: TTFT p50/p95/max<br/>Response Rate, Completion Rate]
+    AGG --> BENCH[Benchmark Grade A+ to F]
+    BENCH --> SAVE[Save Superfight to DB]
 ```
 
 ---
@@ -444,7 +635,18 @@ flowchart LR
 | 2 | <= 20,000 | <= 120,000 | Slow |
 | 1 | > 20,000 | > 120,000 | Unacceptable |
 
-### 6.3 Rubric Weight Snapshot
+### 6.3 Load Test Benchmarks (Superfight Grading)
+
+| Grade | TTFT p95 | Total p95 | Response Rate | Description |
+|-------|----------|-----------|---------------|-------------|
+| A+ | < 3s | < 15s | >= 99% | Exceptional |
+| A | < 5s | < 25s | >= 95% | Excellent |
+| B | < 8s | < 40s | >= 90% | Good |
+| C | < 12s | < 60s | >= 80% | Acceptable |
+| D | < 20s | < 90s | >= 70% | Poor |
+| F | >= 20s | >= 90s | < 70% | Critical |
+
+### 6.4 Rubric Weight Snapshot
 
 ```mermaid
 flowchart LR
@@ -456,7 +658,93 @@ flowchart LR
 
 ---
 
-## 7. Concurrency Model
+## 7. Ask Joe — AI Chatbot Architecture
+
+```mermaid
+flowchart TD
+    USER[User types question] --> PANEL[AskJoePanel.jsx<br/>floating chat widget]
+    PANEL -->|POST /api/ask-joe| SERVER[FastAPI]
+    SERVER --> INJECT[Inject scenario data<br/>from DB into prompt]
+    INJECT --> CLAUDE[Claude CLI subprocess<br/>--model haiku --max-turns 1]
+    CLAUDE --> PARSE[Parse response]
+    PARSE --> MD[Markdown text]
+    PARSE --> ACTION["Action block<br/>(```action {...}```)"]
+
+    MD --> RENDER[MarkdownText renderer<br/>bold, italic, code, lists]
+    ACTION --> CARD[ActionCard component<br/>match config preview]
+    CARD -->|user confirms| LAUNCH[POST /api/matches<br/>create + navigate]
+```
+
+**Security Hardening:**
+- Read-only: can read scenarios from DB, cannot write
+- Refuses code generation, config changes, prompt injection attempts
+- Only triggers match execution with explicit user confirmation
+- Scoped to tool usage questions only
+
+---
+
+## 8. Scenario Management Architecture
+
+```mermaid
+flowchart TD
+    subgraph Sources["Scenario Sources"]
+        BUILTIN[24 Builtin Scenarios<br/>kai_actor.py]
+        CUSTOM[Custom Scenarios<br/>custom_scenarios table]
+        SUBMIT[User Submissions<br/>scenario_submissions table]
+    end
+
+    subgraph Visibility["Visibility Control"]
+        HIDDEN[hidden_scenarios table<br/>soft-delete for builtins]
+    end
+
+    subgraph Operations["Admin Operations"]
+        CREATE[Create Custom]
+        EDIT_C[Edit Custom In-Place]
+        CLONE[Clone Builtin → Custom]
+        HIDE[Hide Builtin]
+        UNHIDE[Unhide Builtin]
+        DELETE[Delete Custom]
+    end
+
+    subgraph Review["Submission Review"]
+        APPROVE[Approve → Custom]
+        REJECT[Reject + Reason]
+    end
+
+    BUILTIN --> HIDDEN
+    HIDDEN -->|filtered| LAUNCHER[Session Launcher]
+    CUSTOM --> LAUNCHER
+    SUBMIT --> Review
+    APPROVE --> CUSTOM
+
+    Operations --> CUSTOM
+    Operations --> HIDDEN
+```
+
+---
+
+## 9. Jira Integration Architecture
+
+```mermaid
+flowchart TD
+    subgraph Triggers["Bug Logging Triggers"]
+        MANUAL[Manual: Admin clicks Log Bug]
+        AUTO[Auto: Quality threshold met]
+        SESSION[Session-level: Log all turns]
+    end
+
+    Triggers --> CHECK[Duplicate Detection<br/>JQL search + Claude AI analysis]
+    CHECK -->|duplicate| SKIP[Skip — link existing]
+    CHECK -->|new| CREATE[Create Jira Issue]
+    CREATE --> ASSIGN[Keyword-based Assignee Routing]
+    ASSIGN --> JIRA[Jira Cloud API]
+    JIRA --> SAVE[Save ticket_key to DB]
+    SAVE --> NOTIFY[Notification to UI]
+```
+
+---
+
+## 10. Concurrency Model
 
 ```mermaid
 flowchart TD
@@ -496,9 +784,9 @@ All configurable via admin API (`PUT /api/config`).
 
 ---
 
-## 8. Real-Time Communication
+## 11. Real-Time Communication
 
-### 8.1 WebSocket Architecture
+### 11.1 WebSocket Architecture
 
 ```mermaid
 flowchart TD
@@ -516,7 +804,8 @@ flowchart TD
     subgraph Events
         E1[turn_start]
         E2[turn_complete]
-        E3[session_complete]
+        E3[turn_scored]
+        E4[session_complete]
     end
 
     C1 --> ACTIVE
@@ -527,7 +816,7 @@ flowchart TD
     Events -->|broadcast| GLOBAL
 ```
 
-### 8.2 Event Payloads
+### 11.2 Event Payloads
 
 **turn_start:**
 ```json
@@ -546,6 +835,16 @@ flowchart TD
   "total_ms": 52100.0,
   "poll_count": 8,
   "tool_calls": ["frontend_render_link"],
+  "eval": {},
+  "eval_latency": 3
+}
+```
+
+**turn_scored:**
+```json
+{
+  "type": "turn_scored",
+  "turn_number": 1,
   "eval": {"relevance": 5, "accuracy": 5, "helpfulness": 4, "tool_usage": 5},
   "eval_latency": 3
 }
@@ -556,44 +855,14 @@ flowchart TD
 {
   "type": "session_complete",
   "session_id": "abc123",
-  "evaluation": {"goal_achievement": 5, "context_retention": 4, ...},
+  "evaluation": {"goal_achievement": 5, "context_retention": 4},
   "turns_completed": 1
 }
 ```
 
 ---
 
-## 9. Environment Configuration
-
-```mermaid
-flowchart LR
-    subgraph Profiles["Environment Profiles (SQLite)"]
-        P[Production<br/>katalonhub.katalon.io]
-        S[Staging<br/>staginggen3platform...com]
-        C[Custom<br/>user-defined]
-    end
-
-    subgraph Creds["Credential Sources"]
-        DB[(env_profiles table)]
-        ENV[.env file]
-    end
-
-    subgraph Cache["Token Cache"]
-        TC[(token_cache table<br/>JWT + expiry)]
-    end
-
-    Profiles -->|active profile| A[get_active_env]
-    A -->|lookup creds| DB
-    DB -->|fallback| ENV
-    A -->|get token| Cache
-    Cache -->|miss| LOGIN[TestOps Login API]
-    LOGIN -->|cache JWT| Cache
-    A -->|create| CLIENT[KaiClient Instance<br/>cached singleton]
-```
-
----
-
-## 10. Deployment Architecture
+## 12. Deployment Architecture
 
 ```mermaid
 graph TB
@@ -630,7 +899,7 @@ graph TB
     CLAUDE_CLI --> V2
 ```
 
-### 10.1 Dockerfile (Multi-Stage)
+### 12.1 Dockerfile (Multi-Stage)
 
 ```
 Stage 1: frontend-build (node:20-slim)
@@ -645,7 +914,7 @@ Stage 2: runtime (python:3.11-slim)
   └── Entrypoint: uvicorn server:app
 ```
 
-### 10.2 Deploy Commands
+### 12.2 Deploy Commands
 
 ```bash
 # Build + deploy
@@ -660,7 +929,7 @@ curl http://10.18.3.20:3006/api/health
 
 ---
 
-## 11. Security
+## 13. Security
 
 | Concern | Implementation |
 |---------|---------------|
@@ -671,10 +940,12 @@ curl http://10.18.3.20:3006/api/health
 | **Secrets** | `.env` file, never committed, mounted read-only in Docker |
 | **XSS Prevention** | React auto-escaping, no `dangerouslySetInnerHTML` |
 | **SQL Injection** | Parameterized queries throughout |
+| **Chatbot Hardening** | Ask Joe: read-only, refuses exploits/injection/code generation |
+| **Confirmation Modals** | All destructive operations use ConfirmModal with danger warnings |
 
 ---
 
-## 12. Performance Optimizations
+## 14. Performance Optimizations
 
 | Optimization | Impact |
 |-------------|--------|
@@ -685,10 +956,12 @@ curl http://10.18.3.20:3006/api/health
 | **Per-match semaphore** | Parallel session execution within matches |
 | **WebSocket broadcasting** | Efficient real-time updates (no polling) |
 | **Rubric weight snapshot** | Avoids re-computation when rubric changes |
+| **Turn sequencing** | wait_for_ready prevents overlapping Kai requests |
+| **Notification seeding** | Release notifications auto-seeded on startup |
 
 ---
 
-## 13. API Reference
+## 15. API Reference
 
 ### Sessions
 
@@ -709,6 +982,22 @@ curl http://10.18.3.20:3006/api/health
 | GET | `/api/matches/{id}` | - | Match report with scenario breakdown |
 | DELETE | `/api/matches/{id}` | Admin | Delete match + cascade |
 | POST | `/api/matches/bulk-delete` | Admin | Bulk delete matches |
+| POST | `/api/matches/delete-by-date` | Admin | Delete by date range or older-than |
+
+### Scenarios
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/scenarios` | - | List all scenarios (builtin + custom, excl. hidden) |
+| POST | `/api/scenarios/custom` | Admin | Create custom scenario |
+| PUT | `/api/scenarios/custom/{id}` | Admin | Update custom scenario |
+| DELETE | `/api/scenarios/custom/{id}` | Admin | Delete custom scenario |
+| POST | `/api/scenarios/{id}/hide` | Admin | Hide scenario (soft-delete) |
+| POST | `/api/scenarios/{id}/unhide` | Admin | Unhide scenario |
+| POST | `/api/scenarios/submit` | - | Submit scenario for review |
+| GET | `/api/scenarios/submissions` | Admin | List pending submissions |
+| POST | `/api/scenarios/submissions/{id}/approve` | Admin | Approve submission |
+| POST | `/api/scenarios/submissions/{id}/reject` | Admin | Reject submission |
 
 ### Configuration
 
@@ -716,7 +1005,6 @@ curl http://10.18.3.20:3006/api/health
 |--------|----------|------|-------------|
 | GET | `/api/config` | - | Get config (concurrency, model, CLI status) |
 | PUT | `/api/config` | Admin | Update config |
-| GET | `/api/scenarios` | - | List predefined test scenarios |
 | GET | `/api/rubric` | - | Get current rubric |
 | PUT | `/api/rubric` | Admin | Update rubric |
 | POST | `/api/rubric/reset` | Admin | Reset rubric to defaults |
@@ -737,8 +1025,54 @@ curl http://10.18.3.20:3006/api/health
 |--------|----------|------|-------------|
 | GET | `/api/reports` | - | Aggregate stats (filter by ring) |
 | GET | `/api/match-trends` | - | Historical match trends |
-| POST | `/api/match-trends/analyze` | - | AI quality analysis (Ask Joe) |
-| GET | `/api/health` | - | System health check |
+| POST | `/api/match-trends/analyze` | - | AI quality analysis |
+
+### Ask Joe (AI Chatbot)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/ask-joe` | - | Chat with Joe (Claude CLI subprocess) |
+
+### Superfight (Load Testing)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/load-test/weight-classes` | - | List weight class definitions |
+| POST | `/api/load-test/sync` | Admin | Sync test users from platform |
+| POST | `/api/load-test/provision` | Admin | Provision N new test users |
+| GET | `/api/load-test/provision/{task_id}` | - | Poll provision task |
+| POST | `/api/load-test/teardown` | Admin | Teardown test users |
+| GET | `/api/load-test/users` | - | List provisioned users |
+| DELETE | `/api/load-test/users/{email}` | Admin | Delete user record |
+| POST | `/api/superfight/start` | - | Start superfight |
+| GET | `/api/superfight/active` | - | Get running superfight |
+| GET | `/api/superfight/{id}` | - | Superfight detail + benchmark |
+| GET | `/api/superfights` | - | List superfight history |
+| GET | `/api/superfights/compare` | - | Compare superfights |
+| DELETE | `/api/superfight/{id}` | Admin | Delete superfight |
+
+### Jira Integration
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/jira/config` | - | Get Jira config |
+| PUT | `/api/jira/config` | Admin | Update Jira config |
+| POST | `/api/jira/test` | Admin | Test connection |
+| POST | `/api/jira/log-bug` | Admin | Log per-turn bug |
+| POST | `/api/jira/log-session-bug` | Admin | Log session bug |
+| GET | `/api/jira/tickets/{session_id}` | - | Get linked tickets |
+| GET | `/api/jira/filter-url` | - | Jira filter URL |
+
+### Notifications & Feedback
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/notifications` | - | List notifications |
+| POST | `/api/notifications` | Admin | Create notification |
+| DELETE | `/api/notifications/{id}` | Admin | Delete notification |
+| POST | `/api/feedback` | - | Submit feedback |
+| GET | `/api/feedback` | Admin | List feedback |
+| DELETE | `/api/feedback/{id}` | Admin | Delete feedback |
 
 ### Auth & Bot
 
@@ -748,7 +1082,7 @@ curl http://10.18.3.20:3006/api/health
 | GET | `/api/me` | Bearer | Check auth status |
 | GET | `/api/joe-bot/health` | - | Claude CLI availability |
 | POST | `/api/joe-bot/auth/start` | - | Start Claude OAuth |
-| POST | `/api/joe-bot/auth/complete` | - | Complete OAuth with code |
+| POST | `/api/joe-bot/auth/complete` | - | Complete OAuth |
 
 ### WebSocket
 
@@ -759,17 +1093,16 @@ curl http://10.18.3.20:3006/api/health
 
 ---
 
-## 14. Tech Stack Summary
+## 16. Tech Stack Summary
 
 ```mermaid
 graph LR
     subgraph Frontend
         REACT[React 18]
-        VITE[Vite]
+        VITE[Vite 7]
         RR[React Router v6]
         RC[Recharts]
         LR[Lucide React]
-        RM[React Markdown]
     end
 
     subgraph Backend
@@ -780,7 +1113,12 @@ graph LR
     end
 
     subgraph AI
-        CLAUDE[Claude Code CLI<br/>Sonnet / Opus]
+        CLAUDE[Claude Code CLI<br/>Haiku / Sonnet / Opus]
+    end
+
+    subgraph Integrations
+        JIRA_I[Jira Cloud]
+        PLATFORM_I[Katalon Platform]
     end
 
     subgraph Infra
@@ -791,17 +1129,17 @@ graph LR
 
     Frontend --> Backend --> AI
     Backend --> SQLITE
+    Backend --> Integrations
     Infra --> Backend
 ```
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
-| **Frontend** | React | 19.2 |
+| **Frontend** | React | 19.x |
 | **Bundler** | Vite | 7.3 |
-| **Routing** | React Router | 7.13 |
+| **Routing** | React Router | 7.x |
 | **Charts** | Recharts | 3.7 |
 | **Icons** | Lucide React | 0.577 |
-| **Markdown** | React Markdown | 10.1 |
 | **Backend** | FastAPI | 0.115+ |
 | **Server** | Uvicorn | 0.30+ |
 | **HTTP Client** | httpx | 0.27+ |

@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Trophy, Plus, Trash2, Clock, Timer, Zap, Award, Layers, CheckCircle, XCircle, RotateCcw, Search, X, CheckSquare, Square } from 'lucide-react'
-import { listMatches, deleteMatch, createMatch, bulkDeleteMatches, formatDt, formatMs, formatSec } from '../api'
+import { Trophy, Plus, Trash2, Clock, Timer, Zap, Award, Layers, CheckCircle, XCircle, RotateCcw, Search, X, CheckSquare, Square, BookOpen } from 'lucide-react'
+import { listMatches, deleteMatch, createMatch, bulkDeleteMatches, deleteMatchesByDate, formatDt, formatMs, formatSec } from '../api'
 import { useAdmin } from '../AdminContext'
+import ConfirmModal from './ConfirmModal'
 
 function ScoreBadge({ value }) {
   if (value == null) return null
@@ -21,6 +22,8 @@ export default function MatchList() {
   const [ringFilter, setRingFilter] = useState('all')
   const [selected, setSelected] = useState(new Set())
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [modal, setModal] = useState({ open: false, type: null, data: null })
+  const [resultMsg, setResultMsg] = useState(null)
   const navigate = useNavigate()
   const { admin } = useAdmin()
 
@@ -55,9 +58,13 @@ export default function MatchList() {
   const statuses = [...new Set(matches.map(m => m.status))]
   const rings = [...new Set(matches.map(m => m.env_key || 'production'))]
 
-  const handleDelete = async (id) => {
-    if (!confirm(`Delete match ${id} and all its rounds?`)) return
-    try { await deleteMatch(id); load() } catch (e) { alert(e.message) }
+  const handleDelete = (id) => {
+    setModal({ open: true, type: 'delete', data: { id } })
+  }
+  const confirmDelete = async () => {
+    const { id } = modal.data
+    setModal({ open: false })
+    try { await deleteMatch(id); load() } catch (e) { setResultMsg({ type: 'error', text: e.message }) }
   }
 
   const handleRerun = async (m) => {
@@ -69,7 +76,7 @@ export default function MatchList() {
         evalModel: m.eval_model,
       })
       navigate(`/matches/${res.match_id}`)
-    } catch (e) { alert('Rematch failed: ' + e.message) }
+    } catch (e) { setResultMsg({ type: 'error', text: 'Rematch failed: ' + e.message }) }
     finally { setRerunning(null) }
   }
 
@@ -90,20 +97,64 @@ export default function MatchList() {
     }
   }
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = () => {
     const ids = [...selected].filter(id => {
       const m = matches.find(match => match.id === id)
       return m && m.status !== 'running'
     })
     if (!ids.length) return
-    if (!confirm(`Delete ${ids.length} match(es) and all their rounds?`)) return
+    setModal({ open: true, type: 'bulk', data: { ids } })
+  }
+  const confirmBulkDelete = async () => {
+    const { ids } = modal.data
+    setModal({ open: false })
     setBulkDeleting(true)
     try {
       await bulkDeleteMatches(ids)
       setSelected(new Set())
       load()
-    } catch (e) { alert(e.message) }
+    } catch (e) { setResultMsg({ type: 'error', text: e.message }) }
     finally { setBulkDeleting(false) }
+  }
+
+  // Date-range delete
+  const [showDateDelete, setShowDateDelete] = useState(false)
+  const [dateDeleteMode, setDateDeleteMode] = useState('older') // older | range
+  const [olderDays, setOlderDays] = useState(30)
+  const [customDays, setCustomDays] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [dateDeleting, setDateDeleting] = useState(false)
+
+  const effectiveDays = olderDays === 'custom' ? (parseInt(customDays) || 0) : olderDays
+
+  const handleDateDelete = () => {
+    let desc = ''
+    if (dateDeleteMode === 'older') {
+      if (!effectiveDays || effectiveDays <= 0) return setResultMsg({ type: 'error', text: 'Enter a valid number of days' })
+      desc = `older than ${effectiveDays} days`
+    } else {
+      if (!dateFrom && !dateTo) return setResultMsg({ type: 'error', text: 'Set at least one date' })
+      desc = `${dateFrom || 'any'} to ${dateTo || 'any'}`
+    }
+    setModal({ open: true, type: 'dateDelete', data: { desc } })
+  }
+  const confirmDateDelete = async () => {
+    setModal({ open: false })
+    let params = {}
+    if (dateDeleteMode === 'older') {
+      params = { older_than_days: effectiveDays }
+    } else {
+      params = { after: dateFrom || undefined, before: dateTo ? dateTo + 'T23:59:59' : undefined }
+    }
+    setDateDeleting(true)
+    try {
+      const result = await deleteMatchesByDate(params)
+      setShowDateDelete(false)
+      load()
+      setResultMsg({ type: 'success', text: `Deleted ${result.count} match(es).` })
+    } catch (e) { setResultMsg({ type: 'error', text: e.message }) }
+    finally { setDateDeleting(false) }
   }
 
   const hasFilters = search || statusFilter !== 'all' || ringFilter !== 'all'
@@ -113,9 +164,59 @@ export default function MatchList() {
 
   return (
     <div>
+      {/* Result message banner */}
+      {resultMsg && (
+        <div style={{
+          padding: '0.5rem 1rem', marginBottom: '0.75rem', borderRadius: 'var(--radius)',
+          fontSize: '0.8rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          background: resultMsg.type === 'error' ? 'rgba(220,38,38,0.08)' : 'rgba(22,163,74,0.08)',
+          border: `1px solid ${resultMsg.type === 'error' ? 'rgba(220,38,38,0.2)' : 'rgba(22,163,74,0.2)'}`,
+          color: resultMsg.type === 'error' ? 'var(--red)' : 'var(--green)',
+        }}>
+          <span>{resultMsg.text}</span>
+          <button onClick={() => setResultMsg(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0.1rem', color: 'inherit' }}><X size={14} /></button>
+        </div>
+      )}
+
+      {/* Confirm modals */}
+      <ConfirmModal
+        open={modal.open && modal.type === 'delete'}
+        title="Delete Match"
+        message={`Delete match ${modal.data?.id} and all its rounds? This cannot be undone.`}
+        danger
+        confirmText="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => setModal({ open: false })}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'bulk'}
+        title="Delete Matches"
+        message={`Delete ${modal.data?.ids?.length} match(es) and all their rounds?`}
+        warning="This action cannot be undone."
+        danger
+        confirmText="Delete All"
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setModal({ open: false })}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'dateDelete'}
+        title="Cleanup Match History"
+        message={`Delete all non-running matches ${modal.data?.desc}?`}
+        warning="Running matches are always protected. This action cannot be undone."
+        danger
+        confirmText="Delete Matches"
+        onConfirm={confirmDateDelete}
+        onCancel={() => setModal({ open: false })}
+      />
+
       <div className="page-header">
         <h2><Trophy size={20} /> Matches</h2>
-        <Link to="/"><button className="primary"><Plus size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />New Match</button></Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Link to="/guideline#fight-modes" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '0.25rem', textDecoration: 'none' }}>
+            <BookOpen size={13} /> Fight Manual
+          </Link>
+          <Link to="/"><button className="primary"><Plus size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />New Match</button></Link>
+        </div>
       </div>
 
       {/* Search & Filters */}
@@ -146,17 +247,81 @@ export default function MatchList() {
             </button>
           )}
         </div>
-        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-          {filtered.length} of {matches.length} matches
-          {admin && selected.size > 0 && (
-            <span style={{ marginLeft: '0.75rem' }}>
-              <strong>{selected.size}</strong> selected
-              <button onClick={handleBulkDelete} disabled={bulkDeleting} className="danger" style={{ fontSize: '0.65rem', padding: '0.15em 0.4em', marginLeft: '0.4rem' }}>
-                {bulkDeleting ? <span className="spinner" /> : <Trash2 size={10} />} Delete Selected
-              </button>
-            </span>
+        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.35rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            {filtered.length} of {matches.length} matches
+            {admin && selected.size > 0 && (
+              <span style={{ marginLeft: '0.75rem' }}>
+                <strong>{selected.size}</strong> selected
+                <button onClick={handleBulkDelete} disabled={bulkDeleting} className="danger" style={{ fontSize: '0.65rem', padding: '0.15em 0.4em', marginLeft: '0.4rem' }}>
+                  {bulkDeleting ? <span className="spinner" /> : <Trash2 size={10} />} Delete Selected
+                </button>
+              </span>
+            )}
+          </div>
+          {admin && (
+            <button onClick={() => setShowDateDelete(!showDateDelete)}
+              style={{ fontSize: '0.65rem', padding: '0.2em 0.5em', display: 'flex', alignItems: 'center', gap: '0.2rem', color: 'var(--red)' }}>
+              <Clock size={10} /> Cleanup by Date
+            </button>
           )}
         </div>
+
+        {/* Date-range delete panel */}
+        {showDateDelete && admin && (
+          <div style={{
+            marginTop: '0.6rem', padding: '0.6rem', background: 'rgba(220,38,38,0.04)',
+            border: '1px solid rgba(220,38,38,0.15)', borderRadius: 'var(--radius)',
+          }}>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--red)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <Trash2 size={12} /> Cleanup Match History
+            </div>
+            <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.4rem' }}>
+              <button className={dateDeleteMode === 'older' ? 'primary' : ''} onClick={() => setDateDeleteMode('older')}
+                style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>Older than</button>
+              <button className={dateDeleteMode === 'range' ? 'primary' : ''} onClick={() => setDateDeleteMode('range')}
+                style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>Date Range</button>
+            </div>
+            {dateDeleteMode === 'older' ? (
+              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.75rem' }}>Delete matches older than</span>
+                <select value={olderDays} onChange={e => setOlderDays(e.target.value === 'custom' ? 'custom' : +e.target.value)}
+                  style={{ fontSize: '0.75rem', padding: '0.2em 0.4em', width: 90 }}>
+                  <option value={7}>7 days</option>
+                  <option value={14}>14 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={60}>60 days</option>
+                  <option value={90}>90 days</option>
+                  <option value="custom">Custom...</option>
+                </select>
+                {olderDays === 'custom' && (
+                  <input type="number" min="1" value={customDays} onChange={e => setCustomDays(e.target.value)}
+                    placeholder="days" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em', width: 60 }} />
+                )}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.75rem' }}>From</span>
+                <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                  style={{ fontSize: '0.72rem', padding: '0.2em 0.4em' }} />
+                <span style={{ fontSize: '0.75rem' }}>to</span>
+                <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                  style={{ fontSize: '0.72rem', padding: '0.2em 0.4em' }} />
+              </div>
+            )}
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.4rem' }}>
+              <button onClick={handleDateDelete} disabled={dateDeleting} className="danger"
+                style={{ fontSize: '0.7rem', padding: '0.25em 0.6em', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                {dateDeleting ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Deleting...</> : <><Trash2 size={11} /> Delete Matches</>}
+              </button>
+              <button onClick={() => setShowDateDelete(false)}
+                style={{ fontSize: '0.7rem', padding: '0.25em 0.6em' }}>Cancel</button>
+            </div>
+            <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+              Running matches are always protected. This action cannot be undone.
+            </div>
+          </div>
+        )}
       </div>
 
       {filtered.length === 0 ? (

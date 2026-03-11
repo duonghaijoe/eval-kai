@@ -1,6 +1,17 @@
+import { useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { BookOpen, Swords, Bot, Film, Trophy, Flame, Bell, Building2, Users, Zap, ClipboardList, Compass, Shuffle, Feather, PersonStanding, Dumbbell, Target, Timer, Star, Medal, BarChart3, Wrench, Circle, MessageSquare, Hand } from 'lucide-react'
 
 export default function Guideline() {
+  const { hash } = useLocation()
+
+  useEffect(() => {
+    if (hash) {
+      const el = document.querySelector(hash)
+      if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
+    }
+  }, [hash])
+
   return (
     <div className="page">
       <div className="page-header">
@@ -169,7 +180,7 @@ export default function Guideline() {
       </div>
 
       {/* Fight Modes */}
-      <div className="card" style={{ padding: '1.25rem', marginBottom: '1.25rem' }}>
+      <div id="fight-modes" className="card" style={{ padding: '1.25rem', marginBottom: '1.25rem' }}>
         <h3 style={{ fontSize: '1rem', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
           <Shuffle size={16} /> Fight Styles (Test Modes)
         </h3>
@@ -209,6 +220,44 @@ export default function Guideline() {
               <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>{m.joke}</div>
             </div>
           ))}
+        </div>
+
+        {/* Under the Hood — How each mode works */}
+        <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'var(--bg-primary)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.5rem', fontWeight: 600 }}>UNDER THE HOOD</div>
+          <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid var(--border)' }}>
+                <th style={{ textAlign: 'left', padding: '0.4rem 0.5rem', color: 'var(--text-muted)', fontWeight: 600 }}></th>
+                <th style={{ textAlign: 'center', padding: '0.4rem 0.5rem', color: 'var(--green)', fontWeight: 600 }}>Fixed</th>
+                <th style={{ textAlign: 'center', padding: '0.4rem 0.5rem', color: 'var(--red)', fontWeight: 600 }}>Fire</th>
+                <th style={{ textAlign: 'center', padding: '0.4rem 0.5rem', color: 'var(--accent)', fontWeight: 600 }}>Explore</th>
+                <th style={{ textAlign: 'center', padding: '0.4rem 0.5rem', color: 'var(--orange)', fontWeight: 600 }}>Hybrid</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ['Brain', 'None (scripted)', 'Claude (autonomous)', 'Claude (per-turn)', 'Claude (per-turn)'],
+                ['Who controls turns?', 'Python loop', 'Claude decides everything', 'Python loop', 'Python loop'],
+                ['Planning', 'Pre-written script', 'Claude decides on the fly', 'No plan — improvises', 'Pre-generates plan, then adapts'],
+                ['Kai interaction', 'Python KaiClient directly', 'Bash → kai_conversation.py', 'Python KaiClient directly', 'Python KaiClient directly'],
+                ['Evaluation', 'Server-side rubric', 'Claude self-evaluates', 'Server-side rubric', 'Server-side rubric'],
+                ['Claude usage', 'None', '1 long session (all turns)', '1 call per turn', '1 plan call + 1 per turn'],
+                ['Best for', 'Regression, CI/CD', 'Fully hands-off testing', 'Discovery, edge cases', 'Structured but adaptive testing'],
+              ].map(([label, ...vals], i) => (
+                <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '0.4rem 0.5rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{label}</td>
+                  {vals.map((v, j) => (
+                    <td key={j} style={{ padding: '0.4rem 0.5rem', textAlign: 'center', color: 'var(--text-secondary)' }}>{v}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '0.5rem' }}>
+            <strong>Key difference:</strong> Fire mode gives Claude full autonomy — it spawns a subprocess, runs all turns via bash, and self-reports.
+            Explore and Hybrid both keep Python in the driver's seat, only asking Claude to generate the next message each turn.
+          </div>
         </div>
       </div>
 

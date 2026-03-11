@@ -135,15 +135,42 @@ class KaiMatch:
 
         logger.info(f"[match={self.match_id}] Round {rnd}: sending '{message[:80]}...'")
 
-        # Wait for Kai to be ready before sending (prevents "invalid request" errors)
+        # Wait for Kai to be ready before sending (prevents overlapping requests)
         if self.state.thread_id:
-            self.client.wait_for_ready(self.state.thread_id)
+            ready_status = self.client.wait_for_ready(self.state.thread_id, timeout=120.0)
+            if ready_status == "timeout":
+                logger.warning(f"[match={self.match_id}] Round {rnd}: Kai still working after 120s, proceeding anyway")
+            elif ready_status == "error":
+                logger.warning(f"[match={self.match_id}] Round {rnd}: Kai in error state, proceeding with new message")
 
-        chat_result = self.client.chat(
-            message=message,
-            thread_id=self.state.thread_id,
-            conversation_history=self.state.conversation_history if self.state.thread_id else None,
-        )
+        round_start = time.time()
+
+        try:
+            chat_result = self.client.chat(
+                message=message,
+                thread_id=self.state.thread_id,
+                conversation_history=self.state.conversation_history if self.state.thread_id else None,
+            )
+        except Exception as e:
+            # On auth/network errors, return error result instead of crashing
+            logger.error(f"[match={self.match_id}] Round {rnd}: chat() failed: {e}")
+            # Enforce minimum round time to prevent rapid-fire failures
+            elapsed = time.time() - round_start
+            if elapsed < 5:
+                time.sleep(5 - elapsed)
+            self.state.elapsed_s = time.time() - self._start_time
+            result = RoundResult(
+                round_number=rnd,
+                user_message=message,
+                assistant_response="",
+                status="error",
+                thread_id=self.state.thread_id or "",
+                run_id="",
+                error=str(e),
+                timestamp=datetime.now().isoformat(),
+            )
+            self.state.rounds.append(result)
+            return result
 
         # Update thread for multi-round
         self.state.thread_id = chat_result.thread_id
@@ -187,6 +214,11 @@ class KaiMatch:
             f"[match={self.match_id}] Round {rnd} done: "
             f"status={result.status} ttfb={result.ttfb_ms:.0f}ms total={result.total_ms:.0f}ms"
         )
+
+        # Enforce minimum round time (2s) to prevent rapid-fire when responses are cached/fast
+        elapsed = time.time() - round_start
+        if elapsed < 2:
+            time.sleep(2 - elapsed)
 
         return result
 
@@ -359,7 +391,13 @@ def main():
 
     def make_client(args):
         if getattr(args, "env", False):
-            return KaiClient.from_env(project_id=getattr(args, "project", "1782829"))
+            # Only pass project_id if explicitly provided via --project flag
+            # (not the default), so from_env() can pick up KAI_PROJECT_ID env var
+            kwargs = {}
+            proj = getattr(args, "project", None)
+            if proj and proj != "1782829":
+                kwargs["project_id"] = proj
+            return KaiClient.from_env(**kwargs)
         token = getattr(args, "token", None) or os.environ.get("KAI_TOKEN", "")
         if not token:
             print("Error: provide --token, --env, or set KAI_TOKEN", file=sys.stderr)

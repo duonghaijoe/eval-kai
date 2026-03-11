@@ -2,6 +2,7 @@
 import json
 import sqlite3
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -145,6 +146,61 @@ def init_db():
                 started_at TEXT,
                 ended_at TEXT,
                 error TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Scenario submissions (community-contributed scenarios)
+            CREATE TABLE IF NOT EXISTS scenario_submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                category TEXT NOT NULL,
+                steps TEXT NOT NULL DEFAULT '[]',
+                tags TEXT DEFAULT '[]',
+                submitted_by TEXT DEFAULT 'anonymous',
+                status TEXT DEFAULT 'pending',
+                reject_reason TEXT,
+                reviewed_by TEXT,
+                reviewed_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Custom scenarios (approved submissions, supplements hardcoded SCENARIOS)
+            CREATE TABLE IF NOT EXISTS custom_scenarios (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                category TEXT NOT NULL,
+                steps TEXT NOT NULL DEFAULT '[]',
+                tags TEXT DEFAULT '[]',
+                submission_id INTEGER REFERENCES scenario_submissions(id),
+                approved_by TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Hidden scenarios (to hide builtin scenarios)
+            CREATE TABLE IF NOT EXISTS hidden_scenarios (
+                id TEXT PRIMARY KEY,
+                hidden_by TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Notifications (central announcement panel)
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                link TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Anonymous feedback
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT DEFAULT 'anonymous',
+                message TEXT NOT NULL,
+                type TEXT DEFAULT 'general',
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
@@ -926,3 +982,232 @@ def list_superfights(limit: int = 50, env_key: str = None) -> list:
 def delete_superfight(fight_id: str):
     with get_conn() as conn:
         conn.execute("DELETE FROM superfights WHERE id = ?", (fight_id,))
+
+
+# ── Scenario Submissions ─────────────────────────────────────────
+
+def create_submission(name: str, description: str, category: str,
+                      steps: list, tags: list = None, submitted_by: str = "anonymous") -> dict:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO scenario_submissions (name, description, category, steps, tags, submitted_by)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (name, description, category, json.dumps(steps), json.dumps(tags or []), submitted_by),
+        )
+        row = conn.execute("SELECT * FROM scenario_submissions WHERE id = ?", (cur.lastrowid,)).fetchone()
+        d = dict(row)
+        for k in ("steps", "tags"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
+
+
+def get_submission(submission_id: int) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM scenario_submissions WHERE id = ?", (submission_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ("steps", "tags"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
+
+
+def list_submissions(status: str = None, limit: int = 100) -> list:
+    with get_conn() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM scenario_submissions WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM scenario_submissions ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            for k in ("steps", "tags"):
+                if isinstance(d.get(k), str):
+                    try:
+                        d[k] = json.loads(d[k])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            results.append(d)
+        return results
+
+
+def approve_submission(submission_id: int, reviewed_by: str = "admin") -> Optional[dict]:
+    """Approve a submission: create a custom_scenario and update submission status."""
+    sub = get_submission(submission_id)
+    if not sub or sub["status"] != "pending":
+        return None
+
+    import hashlib
+    scenario_id = f"custom-{hashlib.md5(sub['name'].encode()).hexdigest()[:8]}"
+
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE scenario_submissions SET status = 'approved', reviewed_by = ?, reviewed_at = datetime('now')
+               WHERE id = ?""",
+            (reviewed_by, submission_id),
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO custom_scenarios (id, name, description, category, steps, tags, submission_id, approved_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (scenario_id, sub["name"], sub["description"], sub["category"],
+             json.dumps(sub["steps"]), json.dumps(sub["tags"]), submission_id, reviewed_by),
+        )
+    return {"scenario_id": scenario_id, "submission_id": submission_id}
+
+
+def reject_submission(submission_id: int, reason: str = "", reviewed_by: str = "admin") -> bool:
+    with get_conn() as conn:
+        affected = conn.execute(
+            """UPDATE scenario_submissions SET status = 'rejected', reject_reason = ?,
+               reviewed_by = ?, reviewed_at = datetime('now')
+               WHERE id = ? AND status = 'pending'""",
+            (reason, reviewed_by, submission_id),
+        ).rowcount
+    return affected > 0
+
+
+def list_custom_scenarios() -> list:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM custom_scenarios ORDER BY created_at DESC").fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            for k in ("steps", "tags"):
+                if isinstance(d.get(k), str):
+                    try:
+                        d[k] = json.loads(d[k])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            results.append(d)
+        return results
+
+
+def create_custom_scenario(name: str, description: str, category: str, steps: list, tags: list = None) -> dict:
+    scenario_id = f"custom-{name.lower().replace(' ', '-').replace('/', '-')[:40]}-{int(time.time())}"
+    steps_json = json.dumps(steps) if not isinstance(steps, str) else steps
+    tags_json = json.dumps(tags or []) if not isinstance(tags or [], str) else (tags or "[]")
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO custom_scenarios (id, name, description, category, steps, tags)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (scenario_id, name, description, category, steps_json, tags_json),
+        )
+        row = conn.execute("SELECT * FROM custom_scenarios WHERE id = ?", (scenario_id,)).fetchone()
+        d = dict(row)
+        for k in ("steps", "tags"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
+
+
+def update_custom_scenario(scenario_id: str, name: str, description: str, category: str, steps: list, tags: list = None) -> dict:
+    steps_json = json.dumps(steps) if not isinstance(steps, str) else steps
+    tags_json = json.dumps(tags or []) if not isinstance(tags or [], str) else (tags or "[]")
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE custom_scenarios SET name = ?, description = ?, category = ?, steps = ?, tags = ?
+               WHERE id = ?""",
+            (name, description, category, steps_json, tags_json, scenario_id),
+        )
+        row = conn.execute("SELECT * FROM custom_scenarios WHERE id = ?", (scenario_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ("steps", "tags"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
+
+
+def delete_custom_scenario(scenario_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM custom_scenarios WHERE id = ?", (scenario_id,))
+
+
+def hide_scenario(scenario_id: str, hidden_by: str = "admin"):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO hidden_scenarios (id, hidden_by) VALUES (?, ?)",
+            (scenario_id, hidden_by),
+        )
+
+
+def unhide_scenario(scenario_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM hidden_scenarios WHERE id = ?", (scenario_id,))
+
+
+def list_hidden_scenarios() -> list:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT id FROM hidden_scenarios").fetchall()
+        return [r["id"] for r in rows]
+
+
+# ── Notifications ─────────────────────────────────────────────────
+
+def create_notification(type_: str, title: str, message: str, link: str = None) -> dict:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO notifications (type, title, message, link) VALUES (?, ?, ?, ?)",
+            (type_, title, message, link),
+        )
+        row = conn.execute("SELECT * FROM notifications WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return dict(row) if row else {}
+
+
+def list_notifications(limit: int = 50) -> list:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_notification(notification_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM notifications WHERE id = ?", (notification_id,))
+
+
+# ── Feedback ──────────────────────────────────────────────────────
+
+def create_feedback(message: str, name: str = "anonymous", type_: str = "general") -> dict:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO feedback (name, message, type) VALUES (?, ?, ?)",
+            (name or "anonymous", message, type_),
+        )
+        row = conn.execute("SELECT * FROM feedback WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return dict(row) if row else {}
+
+
+def list_feedback(limit: int = 100) -> list:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM feedback ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_feedback(feedback_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM feedback WHERE id = ?", (feedback_id,))

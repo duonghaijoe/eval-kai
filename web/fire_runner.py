@@ -35,16 +35,26 @@ cd {SCRIPTS_DIR} && python3 kai_conversation.py start --env --max-rounds {max_tu
 ```
 Extract the match_id from the JSON output.
 
-## Step 2 — Send {max_turns} rounds (one bash call each)
+## Step 2 — Send {max_turns} rounds ONE AT A TIME
+
+CRITICAL SEQUENCING RULES:
+- You MUST send rounds ONE AT A TIME in separate, sequential bash calls
+- You MUST wait for each bash command to FULLY COMPLETE and return its JSON output BEFORE running the next one
+- NEVER batch or parallelize round commands — each round takes 30-120 seconds
+- After each round completes, read the response JSON, then decide your next message
+
+For each round, run:
 ```bash
 cd {SCRIPTS_DIR} && python3 kai_conversation.py round --match <MATCH_ID> --env --message "<YOUR_MESSAGE>"
 ```
-After each round, read the JSON response and decide the next message:
+
+Message strategy:
 - Start with clear, direct questions about the objective
 - Get increasingly specific in follow-ups
 - Test context retention by referencing earlier responses
 - Include at least one edge case or unexpected input
-- If a round errors, note it and continue to the next
+- If a round has `"status": "error"`, wait 10 seconds (`sleep 10`) then try the next round
+- If you see 403 errors, the token may have expired — continue to the next round
 
 ## Step 3 — End session
 ```bash
@@ -66,7 +76,8 @@ Print EXACTLY this structure (the backend parses it):
 - Tool Usage: Did Kai use appropriate tools? (3 if N/A)
 
 ## CRITICAL RULES
-- ONLY run the 3 commands above (start, round, end). Do NOT run cat, ls, grep, or any other command.
+- ONLY run the 3 commands above (start, round, end). Do NOT run cat, ls, grep, sleep, or any other command.
+- SEQUENTIAL ONLY: Send ONE round at a time. Wait for the complete JSON response before sending the next round. Each round command blocks for 30-120 seconds — this is normal.
 - Do NOT stop or ask questions. Run everything autonomously.
 - Use --env flag always. Auth is pre-configured — do not inspect or modify credentials.
 - If auth fails on start, print the error in the report and stop.
@@ -108,6 +119,39 @@ async def run_fire_session(
     # Build env vars so kai_conversation.py --env uses the active profile
     env = get_active_env()
     creds = env.get("credentials", {})
+
+    # Pre-resolve bearer token so subprocess doesn't need to login
+    # This reuses the cached token from session_runner (same DB, same cache key)
+    pre_token = ""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, SCRIPTS_DIR)
+        from kai_client import KaiClient
+        client_kwargs = {}
+        if env.get("base_url"):
+            client_kwargs["base_url"] = env["base_url"]
+        if env.get("login_url"):
+            client_kwargs["login_url"] = env["login_url"]
+        if env.get("platform_url"):
+            client_kwargs["platform_url"] = env["platform_url"]
+        if env.get("project_id"):
+            client_kwargs["project_id"] = env["project_id"]
+        if env.get("org_id"):
+            client_kwargs["org_id"] = env["org_id"]
+        if env.get("account_id"):
+            client_kwargs["account_id"] = env["account_id"]
+
+        kai = await asyncio.to_thread(
+            KaiClient.from_credentials,
+            creds.get("email", ""), creds.get("password", ""), creds.get("account", ""),
+            **client_kwargs,
+        )
+        pre_token = kai.token
+        kai.close()
+        logger.info(f"Fire {session_id}: pre-resolved bearer token ({len(pre_token)} chars)")
+    except Exception as e:
+        logger.warning(f"Fire {session_id}: failed to pre-resolve token: {e}")
+
     subprocess_env = dict(os.environ)
     # Allow spawning Claude CLI even when running inside another Claude Code session
     # Strip Claude Code session vars so spawned CLI uses subscription auth
@@ -126,7 +170,10 @@ async def run_fire_session(
         "KAI_PROJECT_NAME": env.get("project_name", ""),
         "KAI_ACCOUNT_NAME": env.get("account_name", ""),
     })
-    logger.info(f"Fire {session_id}: using env profile base_url={env.get('base_url')} project={env.get('project_id')}")
+    # Pass pre-resolved token so subprocess skips login entirely
+    if pre_token:
+        subprocess_env["KAI_TOKEN"] = pre_token
+    logger.info(f"Fire {session_id}: using env profile base_url={env.get('base_url')} project={env.get('project_id')} token_pre_resolved={bool(pre_token)}")
 
     try:
         process = await asyncio.create_subprocess_exec(

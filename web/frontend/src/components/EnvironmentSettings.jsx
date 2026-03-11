@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity, Bot } from 'lucide-react'
-import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth, getConfig, updateConfig } from '../api'
+import { useSearchParams } from 'react-router-dom'
+import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity, Bot, Bug, AlertCircle, FileCheck, XCircle, ChevronRight, ChevronDown, Eye, Edit3, Send, Copy } from 'lucide-react'
+import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth, getConfig, updateConfig, getJiraConfig, updateJiraConfig, testJiraConnection, getJiraFilterUrl, getSubmissions, approveSubmission, rejectSubmission, deleteCustomScenario, createCustomScenario, updateCustomScenario, getScenarios, hideScenario } from '../api'
 import { useAdmin } from '../AdminContext'
 
 function HealthResult({ health }) {
@@ -181,6 +182,203 @@ function JoeBotCard() {
   )
 }
 
+function JiraConfigCard({ readOnly }) {
+  const [cfg, setCfg] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null)
+  const [filterUrl, setFilterUrl] = useState(null)
+  const [newRule, setNewRule] = useState({ keywords: '', assignee: '' })
+
+  useEffect(() => {
+    getJiraConfig().then(d => { setCfg(d); setLoading(false) }).catch(() => setLoading(false))
+    getJiraFilterUrl().then(d => setFilterUrl(d.url)).catch(() => {})
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setSaved(false)
+    try {
+      const updated = await updateJiraConfig(cfg)
+      setCfg(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      alert('Failed: ' + e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleTest = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const result = await testJiraConnection()
+      setTestResult(result)
+    } catch (e) {
+      setTestResult({ ok: false, error: e.message })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const addRule = () => {
+    if (!newRule.keywords.trim() || !newRule.assignee.trim()) return
+    const rules = [...(cfg.assignment_rules || []), {
+      keywords: newRule.keywords.split(',').map(k => k.trim()).filter(Boolean),
+      assignee: newRule.assignee.trim(),
+    }]
+    setCfg(c => ({ ...c, assignment_rules: rules }))
+    setNewRule({ keywords: '', assignee: '' })
+  }
+
+  const removeRule = (idx) => {
+    setCfg(c => ({ ...c, assignment_rules: (c.assignment_rules || []).filter((_, i) => i !== idx) }))
+  }
+
+  if (loading) return <div className="card"><span className="spinner" /> Loading Jira config...</div>
+  if (!cfg) return null
+
+  const rules = typeof cfg.assignment_rules === 'string' ? JSON.parse(cfg.assignment_rules || '[]') : (cfg.assignment_rules || [])
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+        <h3 style={{ margin: 0 }}>
+          <Bug size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />
+          Jira Bug Tracking
+        </h3>
+        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+          {filterUrl && (
+            <a href={filterUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.68rem', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: '0.15rem', textDecoration: 'none' }}>
+              View All Tickets <ExternalLink size={9} />
+            </a>
+          )}
+          <button onClick={handleTest} disabled={testing || readOnly} style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>
+            {testing
+              ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Testing...</>
+              : <><Activity size={11} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} />Test Connection</>
+            }
+          </button>
+          {!readOnly && (
+            <button className="primary" onClick={handleSave} disabled={saving} style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>
+              {saving
+                ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Saving...</>
+                : saved
+                  ? <><CheckCircle size={11} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} /> Saved</>
+                  : <><Save size={11} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} /> Save</>
+              }
+            </button>
+          )}
+        </div>
+      </div>
+
+      {testResult && (
+        <div style={{ padding: '0.4rem 0.6rem', borderRadius: '6px', marginBottom: '0.5rem', fontSize: '0.73rem', background: testResult.ok ? 'rgba(22,163,74,0.08)' : 'rgba(220,38,38,0.08)', border: `1px solid ${testResult.ok ? 'var(--green)' : 'var(--red)'}` }}>
+          {testResult.ok
+            ? <span style={{ color: 'var(--green)' }}><CheckCircle size={11} style={{ verticalAlign: 'middle' }} /> Connected — {testResult.user || 'OK'}</span>
+            : <span style={{ color: 'var(--red)' }}><AlertCircle size={11} style={{ verticalAlign: 'middle' }} /> {testResult.error}</span>
+          }
+        </div>
+      )}
+
+      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+        Automatically or manually log bugs to Jira when rounds have errors or low quality scores.
+      </div>
+
+      {/* Connection Settings */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.4rem', marginBottom: '0.75rem' }}>
+        <div>
+          <label>Jira Base URL</label>
+          <input value={cfg.base_url || ''} onChange={e => setCfg(c => ({ ...c, base_url: e.target.value }))} disabled={readOnly} placeholder="https://your-domain.atlassian.net" />
+        </div>
+        <div>
+          <label>Project Key</label>
+          <input value={cfg.project_key || ''} onChange={e => setCfg(c => ({ ...c, project_key: e.target.value }))} disabled={readOnly} placeholder="QUAL" />
+        </div>
+        <div>
+          <label>Ticket Label</label>
+          <input value={cfg.label || ''} onChange={e => setCfg(c => ({ ...c, label: e.target.value }))} disabled={readOnly} placeholder="boxing-test-kai" />
+        </div>
+        <div>
+          <label>Username (email)</label>
+          <input value={cfg.username || ''} onChange={e => setCfg(c => ({ ...c, username: e.target.value }))} disabled={readOnly} placeholder="user@company.com" />
+        </div>
+        <div>
+          <label>API Token {cfg.api_token ? <span style={{ color: 'var(--green)', fontSize: '0.65rem' }}>(set)</span> : null}</label>
+          <input type="password" defaultValue="" onChange={e => setCfg(c => ({ ...c, api_token: e.target.value }))} disabled={readOnly} placeholder={cfg.api_token ? 'Leave blank to keep' : 'Jira API token'} />
+        </div>
+        <div>
+          <label>Default Assignee</label>
+          <input value={cfg.default_assignee || ''} onChange={e => setCfg(c => ({ ...c, default_assignee: e.target.value }))} disabled={readOnly} placeholder="user@company.com" />
+        </div>
+      </div>
+
+      {/* Auto-trigger Settings */}
+      <div style={{ padding: '0.6rem', background: 'var(--bg-primary)', borderRadius: '6px', marginBottom: '0.75rem' }}>
+        <div style={{ fontWeight: 600, fontSize: '0.75rem', marginBottom: '0.4rem' }}>Auto-Trigger</div>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', cursor: 'pointer' }}>
+            <input type="checkbox" checked={!!cfg.auto_enabled} onChange={e => setCfg(c => ({ ...c, auto_enabled: e.target.checked }))} disabled={readOnly} />
+            Enable auto-logging
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem' }}>
+            <span>Quality &lt;</span>
+            <input type="number" min={1} max={5} step={0.5} value={cfg.auto_quality_threshold || 3} onChange={e => setCfg(c => ({ ...c, auto_quality_threshold: +e.target.value }))} disabled={readOnly} style={{ width: '3.5rem' }} />
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', cursor: 'pointer' }}>
+            <input type="checkbox" checked={!!cfg.auto_on_error} onChange={e => setCfg(c => ({ ...c, auto_on_error: e.target.checked }))} disabled={readOnly} />
+            On error status
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem' }}>
+            <span>Latency grade &le;</span>
+            <select value={cfg.auto_latency_grade || 'D'} onChange={e => setCfg(c => ({ ...c, auto_latency_grade: e.target.value }))} disabled={readOnly} style={{ fontSize: '0.75rem', padding: '0.15em 0.3em' }}>
+              <option value="F">F</option>
+              <option value="D">D</option>
+              <option value="C">C</option>
+              <option value="B">B</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Assignment Rules */}
+      <div style={{ padding: '0.6rem', background: 'var(--bg-primary)', borderRadius: '6px' }}>
+        <div style={{ fontWeight: 600, fontSize: '0.75rem', marginBottom: '0.4rem' }}>Assignment Rules (keyword → assignee)</div>
+        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+          If Kai's response or user message matches keywords, assign to the specified person. Falls back to default assignee.
+        </div>
+        {rules.map((rule, idx) => (
+          <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '0.25rem', fontSize: '0.73rem' }}>
+            <span style={{ background: 'white', padding: '0.15em 0.4em', borderRadius: '4px', border: '1px solid var(--border)', flex: 1 }}>
+              {(rule.keywords || []).join(', ')}
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>→</span>
+            <span style={{ fontWeight: 500 }}>{rule.assignee}</span>
+            {!readOnly && (
+              <button onClick={() => removeRule(idx)} style={{ fontSize: '0.6rem', padding: '0.1em 0.3em', color: 'var(--red)' }}>
+                <Trash2 size={10} />
+              </button>
+            )}
+          </div>
+        ))}
+        {!readOnly && (
+          <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', marginTop: '0.35rem' }}>
+            <input value={newRule.keywords} onChange={e => setNewRule(r => ({ ...r, keywords: e.target.value }))} placeholder="Keywords (comma separated)" style={{ flex: 2, fontSize: '0.73rem' }} />
+            <input value={newRule.assignee} onChange={e => setNewRule(r => ({ ...r, assignee: e.target.value }))} placeholder="Assignee email" style={{ flex: 1, fontSize: '0.73rem' }} />
+            <button onClick={addRule} disabled={!newRule.keywords.trim() || !newRule.assignee.trim()} style={{ fontSize: '0.65rem', padding: '0.15em 0.4em' }}>
+              <Plus size={10} style={{ verticalAlign: 'middle' }} /> Add
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function EnvCard({ envKey, env, isActive, onSelect, onEdit, onDelete, readOnly }) {
   const [editing, setEditing] = useState(false)
   const [healthChecking, setHealthChecking] = useState(false)
@@ -343,8 +541,378 @@ function EnvCard({ envKey, env, isActive, onSelect, onEdit, onDelete, readOnly }
   )
 }
 
+// ── Scenario Editor Form (Create / Edit) ──
+function ScenarioEditorForm({ initial, onSave, onCancel, saving }) {
+  const [name, setName] = useState(initial?.name || '')
+  const [description, setDescription] = useState(initial?.description || '')
+  const [category, setCategory] = useState(initial?.category || 'general')
+  const [tags, setTags] = useState((initial?.tags || []).join(', '))
+  const [steps, setSteps] = useState(initial?.steps?.length > 0 ? initial.steps : [{ name: 'Step 1', message: '' }])
+
+  const addStep = () => setSteps(s => [...s, { name: `Step ${s.length + 1}`, message: '' }])
+  const removeStep = (idx) => setSteps(s => s.filter((_, i) => i !== idx))
+  const updateStep = (idx, field, value) => setSteps(s => s.map((st, i) => i === idx ? { ...st, [field]: value } : st))
+
+  const valid = name.trim() && description.trim() && steps.length > 0 && steps.every(s => s.message.trim())
+
+  return (
+    <div style={{ padding: '0.75rem', background: 'var(--bg-primary)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem', marginBottom: '0.5rem' }}>
+        <div>
+          <label style={{ fontSize: '0.72rem' }}>Name</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Scenario name" style={{ fontSize: '0.78rem' }} />
+        </div>
+        <div>
+          <label style={{ fontSize: '0.72rem' }}>Category</label>
+          <input value={category} onChange={e => setCategory(e.target.value)} placeholder="e.g. general, auth, testing" style={{ fontSize: '0.78rem' }} />
+        </div>
+      </div>
+      <div style={{ marginBottom: '0.5rem' }}>
+        <label style={{ fontSize: '0.72rem' }}>Description</label>
+        <input value={description} onChange={e => setDescription(e.target.value)} placeholder="What does this scenario test?" style={{ fontSize: '0.78rem' }} />
+      </div>
+      <div style={{ marginBottom: '0.5rem' }}>
+        <label style={{ fontSize: '0.72rem' }}>Tags (comma separated)</label>
+        <input value={tags} onChange={e => setTags(e.target.value)} placeholder="e.g. smoke, login, api" style={{ fontSize: '0.78rem' }} />
+      </div>
+      <div style={{ marginBottom: '0.5rem' }}>
+        <label style={{ fontSize: '0.72rem', fontWeight: 600 }}>Exchanges</label>
+        <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>
+          Use [bracket notes] for internal instructions — they'll be stripped before sending to Kai.
+        </div>
+        {steps.map((step, i) => (
+          <div key={i} style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', minWidth: 18 }}>{i + 1}.</span>
+            <input value={step.message} onChange={e => updateStep(i, 'message', e.target.value)}
+              placeholder={`Exchange ${i + 1} message...`} style={{ flex: 1, fontSize: '0.75rem' }} />
+            {steps.length > 1 && (
+              <button onClick={() => removeStep(i)} style={{ fontSize: '0.6rem', padding: '0.1em 0.25em', color: 'var(--red)' }}>
+                <Trash2 size={10} />
+              </button>
+            )}
+          </div>
+        ))}
+        <button onClick={addStep} style={{ fontSize: '0.68rem', padding: '0.2em 0.5em', marginTop: '0.2rem' }}>
+          <Plus size={10} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} /> Add Exchange
+        </button>
+      </div>
+      <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={{ fontSize: '0.72rem', padding: '0.3em 0.7em' }}>Cancel</button>
+        <button className="primary" disabled={!valid || saving} onClick={() => onSave({
+          name: name.trim(), description: description.trim(), category: category.trim() || 'general',
+          steps, tags: tags.split(',').map(t => t.trim()).filter(Boolean),
+        })} style={{ fontSize: '0.72rem', padding: '0.3em 0.7em' }}>
+          {saving ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Saving...</> : <><Save size={11} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} /> Save</>}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Reusable scenario row with expand ──
+function ScenarioRow({ sc, expandedId, setExpandedId, borderColor, extra }) {
+  const isExp = expandedId === sc.id
+  return (
+    <div style={{
+      border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden',
+      borderLeft: borderColor ? `3px solid ${borderColor}` : undefined,
+    }}>
+      <div onClick={() => setExpandedId(isExp ? null : sc.id)} style={{
+        padding: '0.5rem 0.75rem', cursor: 'pointer', display: 'flex', justifyContent: 'space-between',
+        alignItems: 'center', background: 'var(--bg-primary)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0 }}>
+          {isExp ? <ChevronDown size={13} style={{ flexShrink: 0 }} /> : <ChevronRight size={13} style={{ flexShrink: 0 }} />}
+          <span style={{ fontWeight: 600, fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sc.name}</span>
+          <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', background: 'var(--bg-hover)', borderRadius: 3, color: 'var(--text-muted)', flexShrink: 0 }}>{sc.category}</span>
+          {sc.source === 'custom' && (
+            <span style={{ fontSize: '0.58rem', padding: '0.1em 0.3em', background: 'var(--accent)', color: '#fff', borderRadius: 3, flexShrink: 0 }}>community</span>
+          )}
+        </div>
+        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', flexShrink: 0, marginLeft: '0.5rem' }}>
+          {sc.steps?.length || 0} exchanges
+        </span>
+      </div>
+      {isExp && (
+        <div style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem' }}>
+          <div style={{ color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>{sc.description}</div>
+          {sc.tags?.length > 0 && (
+            <div style={{ display: 'flex', gap: '0.2rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
+              {sc.tags.map(t => (
+                <span key={t} style={{ fontSize: '0.6rem', padding: '0.1em 0.35em', background: 'var(--bg-hover)', borderRadius: 3, color: 'var(--text-muted)' }}>{t}</span>
+              ))}
+            </div>
+          )}
+          <div style={{ marginBottom: '0.4rem' }}>
+            {(sc.steps || []).map((step, i) => (
+              <div key={i} style={{ color: 'var(--text-secondary)', padding: '0.2rem 0', display: 'flex', gap: '0.3rem', alignItems: 'flex-start' }}>
+                <span style={{ color: 'var(--text-muted)', minWidth: 16, fontSize: '0.68rem' }}>{i + 1}.</span>
+                <span style={{ fontSize: '0.73rem' }}>
+                  {step.message?.split(/(\[.*?\])/).map((part, j) =>
+                    part.startsWith('[') && part.endsWith(']')
+                      ? <span key={j} style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.66rem' }}>{part}</span>
+                      : <span key={j}>{part}</span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+          {extra}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Fixed Scenarios Tab ──
+function FixedScenariosTab({ isAdmin }) {
+  const [allScenarios, setAllScenarios] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [catFilter, setCatFilter] = useState('all')
+  const [expandedId, setExpandedId] = useState(null)
+  const [showCreate, setShowCreate] = useState(false)
+  const [editingId, setEditingId] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  const load = async () => {
+    try {
+      const data = await getScenarios()
+      setAllScenarios(data.scenarios || [])
+    } catch {} finally { setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const builtinScenarios = allScenarios.filter(s => s.source !== 'custom')
+  const customScenarios = allScenarios.filter(s => s.source === 'custom')
+  const categories = [...new Set(builtinScenarios.map(s => s.category))].sort()
+  const filteredBuiltin = catFilter === 'all' ? builtinScenarios : builtinScenarios.filter(s => s.category === catFilter)
+
+  // Clone a builtin scenario as a new custom scenario
+  const [cloningId, setCloningId] = useState(null)
+
+  const handleCreate = async (data) => {
+    setSaving(true)
+    try { await createCustomScenario(data); setShowCreate(false); setCloningId(null); load() } catch (e) { alert(e.message) } finally { setSaving(false) }
+  }
+  const handleUpdate = async (id, data) => {
+    setSaving(true)
+    try { await updateCustomScenario(id, data); setEditingId(null); load() } catch (e) { alert(e.message) } finally { setSaving(false) }
+  }
+  const handleDelete = async (sc) => {
+    const label = sc.source === 'custom' ? 'Remove this custom scenario?' : 'Hide this builtin scenario? (can be restored later)'
+    if (!confirm(label)) return
+    try {
+      if (sc.source === 'custom') {
+        await deleteCustomScenario(sc.id)
+      } else {
+        await hideScenario(sc.id)
+      }
+      load()
+    } catch (e) { alert(e.message) }
+  }
+  const handleClone = (sc) => {
+    setCloningId(sc.id)
+    setExpandedId(null)
+    setEditingId(null)
+    setShowCreate(false)
+  }
+
+  if (loading) return <div style={{ padding: '2rem', textAlign: 'center' }}><span className="spinner" /> Loading scenarios...</div>
+
+  const displayScenarios = catFilter === 'custom' ? customScenarios : catFilter === 'all'
+    ? [...builtinScenarios, ...customScenarios]
+    : filteredBuiltin
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+          <button className={catFilter === 'all' ? 'primary' : ''} onClick={() => setCatFilter('all')}
+            style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>
+            All ({builtinScenarios.length + customScenarios.length})
+          </button>
+          {categories.map(cat => {
+            const count = builtinScenarios.filter(s => s.category === cat).length
+            return (
+              <button key={cat} className={catFilter === cat ? 'primary' : ''} onClick={() => setCatFilter(cat)}
+                style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>
+                {cat} ({count})
+              </button>
+            )
+          })}
+          {customScenarios.length > 0 && (
+            <button className={catFilter === 'custom' ? 'primary' : ''} onClick={() => setCatFilter('custom')}
+              style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>
+              community ({customScenarios.length})
+            </button>
+          )}
+        </div>
+        {isAdmin && (
+          <button className="primary" onClick={() => { setShowCreate(!showCreate); setEditingId(null) }}
+            style={{ fontSize: '0.72rem', padding: '0.3em 0.7em', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <Plus size={12} /> New Scenario
+          </button>
+        )}
+      </div>
+
+      {showCreate && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <ScenarioEditorForm onSave={handleCreate} onCancel={() => setShowCreate(false)} saving={saving} />
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+        {displayScenarios.map(sc => (
+          editingId === sc.id ? (
+            <ScenarioEditorForm key={sc.id} initial={sc} saving={saving}
+              onSave={(data) => handleUpdate(sc.id, data)} onCancel={() => setEditingId(null)} />
+          ) : cloningId === sc.id ? (
+            <ScenarioEditorForm key={`clone-${sc.id}`} saving={saving}
+              initial={{ ...sc, name: sc.source !== 'custom' ? sc.name : `${sc.name} (copy)` }}
+              onSave={handleCreate} onCancel={() => setCloningId(null)} />
+          ) : (
+            <ScenarioRow key={sc.id} sc={sc} expandedId={expandedId} setExpandedId={setExpandedId}
+              borderColor={sc.source === 'custom' ? 'var(--accent)' : undefined}
+              extra={isAdmin && (
+                <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                  <button onClick={() => {
+                    if (sc.source === 'custom') {
+                      setEditingId(sc.id); setExpandedId(null); setShowCreate(false); setCloningId(null)
+                    } else {
+                      // Builtin: edit saves as new custom
+                      setCloningId(sc.id); setExpandedId(null); setEditingId(null); setShowCreate(false)
+                    }
+                  }}
+                    style={{ fontSize: '0.68rem', padding: '0.2em 0.5em', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                    <Edit3 size={11} /> Edit
+                  </button>
+                  <button onClick={() => handleClone(sc)}
+                    style={{ fontSize: '0.68rem', padding: '0.2em 0.5em', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                    <Copy size={11} /> Clone
+                  </button>
+                  <button onClick={() => handleDelete(sc)} className="danger"
+                    style={{ fontSize: '0.68rem', padding: '0.2em 0.5em', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                    <Trash2 size={11} /> {sc.source === 'custom' ? 'Remove' : 'Hide'}
+                  </button>
+                </div>
+              )}
+            />
+          )
+        ))}
+      </div>
+
+      {displayScenarios.length === 0 && (
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1rem' }}>
+          No scenarios in "{catFilter}"
+        </div>
+      )}
+    </>
+  )
+}
+
+// ── Submission Pool Tab ──
+function SubmissionPoolTab({ isAdmin }) {
+  const [submissions, setSubmissions] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('pending')
+  const [expandedId, setExpandedId] = useState(null)
+  const [rejectId, setRejectId] = useState(null)
+  const [rejectReason, setRejectReason] = useState('')
+
+  const load = async () => {
+    try {
+      const data = await getSubmissions()
+      setSubmissions(data.submissions || [])
+    } catch {} finally { setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const handleApprove = async (id) => {
+    try { await approveSubmission(id); load() } catch (e) { alert(e.message) }
+  }
+  const handleReject = async (id) => {
+    try { await rejectSubmission(id, rejectReason); setRejectId(null); setRejectReason(''); load() } catch (e) { alert(e.message) }
+  }
+
+  const pendingCount = submissions.filter(s => s.status === 'pending').length
+  const filteredSubs = filter === 'all' ? submissions : submissions.filter(s => s.status === filter)
+
+  if (loading) return <div style={{ padding: '2rem', textAlign: 'center' }}><span className="spinner" /> Loading submissions...</div>
+
+  return (
+    <>
+      <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.75rem' }}>
+        {['pending', 'approved', 'rejected', 'all'].map(f => (
+          <button key={f} className={filter === f ? 'primary' : ''} onClick={() => setFilter(f)}
+            style={{ fontSize: '0.68rem', padding: '0.2em 0.5em' }}>
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+            {f === 'pending' && pendingCount > 0 && ` (${pendingCount})`}
+          </button>
+        ))}
+      </div>
+
+      {filteredSubs.length === 0 ? (
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1rem' }}>
+          No {filter === 'all' ? '' : filter} submissions
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+          {filteredSubs.map(sub => (
+            <ScenarioRow key={`sub-${sub.id}`}
+              sc={{ ...sub, id: `sub-${sub.id}`, steps: sub.steps || [] }}
+              expandedId={expandedId} setExpandedId={setExpandedId}
+              borderColor={sub.status === 'pending' ? 'var(--orange)' : sub.status === 'approved' ? 'var(--green)' : 'var(--red)'}
+              extra={
+                <div>
+                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                    <span className={`badge ${sub.status === 'pending' ? 'pending' : sub.status === 'approved' ? 'completed' : 'error'}`}
+                      style={{ fontSize: '0.58rem', marginRight: '0.3rem' }}>{sub.status}</span>
+                    Submitted by: {sub.submitted_by || 'anonymous'}
+                    {sub.reviewed_by && ` · Reviewed by: ${sub.reviewed_by}`}
+                    {sub.reject_reason && <span style={{ color: 'var(--red)' }}> · Reason: {sub.reject_reason}</span>}
+                    <span style={{ marginLeft: '0.3rem' }}>· {new Date(sub.created_at + 'Z').toLocaleDateString()}</span>
+                  </div>
+                  {isAdmin && sub.status === 'pending' && (
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                      <button onClick={() => handleApprove(sub.id)} className="primary"
+                        style={{ fontSize: '0.7rem', padding: '0.25em 0.6em', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                        <CheckCircle size={11} /> Approve
+                      </button>
+                      {rejectId === sub.id ? (
+                        <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                          <input value={rejectReason} onChange={e => setRejectReason(e.target.value)}
+                            placeholder="Reason (optional)" style={{ fontSize: '0.7rem', width: 160 }} />
+                          <button onClick={() => handleReject(sub.id)} className="danger"
+                            style={{ fontSize: '0.7rem', padding: '0.25em 0.5em' }}>Reject</button>
+                          <button onClick={() => { setRejectId(null); setRejectReason('') }}
+                            style={{ fontSize: '0.7rem', padding: '0.25em 0.5em' }}>Cancel</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setRejectId(sub.id)}
+                          style={{ fontSize: '0.7rem', padding: '0.25em 0.6em', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                          <XCircle size={11} /> Decline
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              }
+            />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+
 export default function EnvironmentSettings() {
   const { admin, setAdmin } = useAdmin()
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') || 'sandbox'
+  const [pageTab, setPageTab] = useState(initialTab) // sandbox | scenarios | pool
   const [config, setConfig] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -440,12 +1008,18 @@ export default function EnvironmentSettings() {
   if (loading) return <div className="loading-text"><span className="spinner" /> Loading settings...</div>
   if (!config) return <div className="empty">Failed to load settings</div>
 
+  const PAGE_TABS = [
+    { key: 'sandbox', label: 'Sandbox Settings', icon: Settings },
+    { key: 'scenarios', label: 'Fixed Scenarios', icon: FileCheck },
+    { key: 'pool', label: 'Submission Pool', icon: Send },
+  ]
+
   return (
     <div>
       <div className="page-header">
         <h2><Settings size={20} /> Arena Settings</h2>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          {isAdmin ? (
+          {pageTab === 'sandbox' && isAdmin ? (
             <>
               <button onClick={handleReset} title="Reset to defaults">
                 <RotateCcw size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />
@@ -460,14 +1034,35 @@ export default function EnvironmentSettings() {
                 }
               </button>
             </>
-          ) : (
+          ) : pageTab === 'sandbox' && !isAdmin ? (
             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
               <Lock size={12} /> Sign in to edit
             </span>
-          )}
+          ) : null}
         </div>
       </div>
 
+      {/* Page-level tabs */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: '1rem', borderBottom: '2px solid var(--border)' }}>
+        {PAGE_TABS.map(t => {
+          const Icon = t.icon
+          return (
+            <button key={t.key} onClick={() => setPageTab(t.key)} style={{
+              fontSize: '0.8rem', padding: '0.6em 1.2em', border: 'none', cursor: 'pointer',
+              background: pageTab === t.key ? 'var(--bg-card)' : 'transparent',
+              color: pageTab === t.key ? 'var(--accent)' : 'var(--text-muted)',
+              borderBottom: pageTab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
+              marginBottom: -2, fontWeight: pageTab === t.key ? 600 : 400,
+              display: 'flex', alignItems: 'center', gap: '0.35rem',
+            }}>
+              <Icon size={14} /> {t.label}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* ── Sandbox Settings Tab ── */}
+      {pageTab === 'sandbox' && (<>
       <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
         Configure which Kai environment to test against. Switch between production, staging, or custom environments.
         Credentials are shared from the server's .env file — only the target URL and project change.
@@ -550,6 +1145,8 @@ export default function EnvironmentSettings() {
         )}
       </div>
 
+      <JiraConfigCard readOnly={!isAdmin} />
+
       <div className="card">
         <h3><Globe size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Test Environments</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -604,6 +1201,33 @@ export default function EnvironmentSettings() {
           Running rounds continue on the environment they started with.
         </p>
       </div>
+      </>)}
+
+      {/* ── Fixed Scenarios Tab ── */}
+      {pageTab === 'scenarios' && (
+        <div className="card">
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <FileCheck size={15} /> Fixed Scenarios
+          </h3>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+            Browse all available fixed scenarios (builtin + community). Admins can create, edit, and remove custom scenarios.
+          </div>
+          <FixedScenariosTab isAdmin={isAdmin} />
+        </div>
+      )}
+
+      {/* ── Submission Pool Tab ── */}
+      {pageTab === 'pool' && (
+        <div className="card">
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <Send size={15} /> Submission Pool
+          </h3>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+            Review community-submitted scenarios. Approved scenarios become available in Fixed mode.
+          </div>
+          <SubmissionPoolTab isAdmin={isAdmin} />
+        </div>
+      )}
     </div>
   )
 }

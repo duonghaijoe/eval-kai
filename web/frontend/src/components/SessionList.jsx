@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { List, Plus, Trash2, Clock, Timer, Zap, Award, Activity, ExternalLink, Trophy, RotateCcw, Search, Filter, CheckSquare, Square, X } from 'lucide-react'
-import { listSessions, deleteSession, startSession, bulkDeleteSessions, formatDt, formatMs, formatSec } from '../api'
+import { List, Plus, Trash2, Clock, Timer, Zap, Award, Activity, ExternalLink, Trophy, RotateCcw, Search, Filter, CheckSquare, Square, X, Bug, Loader } from 'lucide-react'
+import { listSessions, deleteSession, startSession, bulkDeleteSessions, formatDt, formatMs, formatSec, logJiraSessionBug, getSessionTickets } from '../api'
 import { useAdmin } from '../AdminContext'
+import ConfirmModal from './ConfirmModal'
 
 function ScoreBadge({ value }) {
   if (value == null) return null
@@ -22,6 +23,10 @@ export default function SessionList() {
   const [ringFilter, setRingFilter] = useState('all')
   const [selected, setSelected] = useState(new Set())
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [sessionTickets, setSessionTickets] = useState({})  // session_id → ticket_key
+  const [loggingBug, setLoggingBug] = useState(null)  // session_id being logged
+  const [modal, setModal] = useState({ open: false, type: null, data: null })
+  const [resultMsg, setResultMsg] = useState(null)
   const navigate = useNavigate()
   const { admin } = useAdmin()
 
@@ -30,6 +35,22 @@ export default function SessionList() {
       const data = await listSessions(200)
       setSessions(data.sessions || [])
     } catch {} finally { setLoading(false) }
+  }
+
+  const handleLogBug = async (sessionId) => {
+    setLoggingBug(sessionId)
+    try {
+      const result = await logJiraSessionBug(sessionId)
+      if (result.ok) {
+        setSessionTickets(prev => ({ ...prev, [sessionId]: result.ticket_key }))
+      } else {
+        setResultMsg({ type: 'error', text: 'Failed: ' + (result.error || 'Unknown error') })
+      }
+    } catch (e) {
+      setResultMsg({ type: 'error', text: 'Error: ' + e.message })
+    } finally {
+      setLoggingBug(null)
+    }
   }
 
   useEffect(() => {
@@ -58,9 +79,14 @@ export default function SessionList() {
   const modes = [...new Set(sessions.map(s => s.actor_mode))]
   const rings = [...new Set(sessions.map(s => s.env_key || 'production'))]
 
-  const handleDelete = async (id) => {
-    if (!confirm(`Delete round ${id}?`)) return
-    try { await deleteSession(id); load() } catch (e) { alert(e.message) }
+  const handleDelete = (id) => {
+    const s = sessions.find(sess => sess.id === id)
+    setModal({ open: true, type: 'delete', data: { id, matchId: s?.match_id } })
+  }
+  const confirmDelete = async () => {
+    const { id } = modal.data
+    setModal({ open: false })
+    try { await deleteSession(id); load() } catch (e) { setResultMsg({ type: 'error', text: e.message }) }
   }
 
   const handleRerun = async (s) => {
@@ -75,7 +101,7 @@ export default function SessionList() {
         evalModel: s.eval_model,
       })
       navigate(`/sessions/${res.session_id}`)
-    } catch (e) { alert('Rematch failed: ' + e.message) }
+    } catch (e) { setResultMsg({ type: 'error', text: 'Rematch failed: ' + e.message }) }
     finally { setRerunning(null) }
   }
 
@@ -96,19 +122,24 @@ export default function SessionList() {
     }
   }
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = () => {
     const ids = [...selected].filter(id => {
       const s = sessions.find(sess => sess.id === id)
       return s && s.status !== 'running'
     })
     if (!ids.length) return
-    if (!confirm(`Delete ${ids.length} round(s)?`)) return
+    const withMatch = ids.filter(id => sessions.find(s => s.id === id)?.match_id)
+    setModal({ open: true, type: 'bulk', data: { ids, withMatchCount: withMatch.length } })
+  }
+  const confirmBulkDelete = async () => {
+    const { ids } = modal.data
+    setModal({ open: false })
     setBulkDeleting(true)
     try {
       await bulkDeleteSessions(ids)
       setSelected(new Set())
       load()
-    } catch (e) { alert(e.message) }
+    } catch (e) { setResultMsg({ type: 'error', text: e.message }) }
     finally { setBulkDeleting(false) }
   }
 
@@ -119,6 +150,42 @@ export default function SessionList() {
 
   return (
     <div>
+      {/* Result message banner */}
+      {resultMsg && (
+        <div style={{
+          padding: '0.5rem 1rem', marginBottom: '0.75rem', borderRadius: 'var(--radius)',
+          fontSize: '0.8rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          background: resultMsg.type === 'error' ? 'rgba(220,38,38,0.08)' : 'rgba(22,163,74,0.08)',
+          border: `1px solid ${resultMsg.type === 'error' ? 'rgba(220,38,38,0.2)' : 'rgba(22,163,74,0.2)'}`,
+          color: resultMsg.type === 'error' ? 'var(--red)' : 'var(--green)',
+        }}>
+          <span>{resultMsg.text}</span>
+          <button onClick={() => setResultMsg(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0.1rem', color: 'inherit' }}><X size={14} /></button>
+        </div>
+      )}
+
+      {/* Confirm modals */}
+      <ConfirmModal
+        open={modal.open && modal.type === 'delete'}
+        title="Delete Round"
+        message={`Delete round ${modal.data?.id}?`}
+        warning={modal.data?.matchId ? `This round belongs to match ${modal.data.matchId}. Deleting it will affect the match results.` : undefined}
+        danger
+        confirmText="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => setModal({ open: false })}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'bulk'}
+        title="Delete Rounds"
+        message={`Delete ${modal.data?.ids?.length} round(s)?`}
+        warning={modal.data?.withMatchCount > 0 ? `${modal.data.withMatchCount} of these rounds belong to a match. Deleting them will affect match results.` : 'This action cannot be undone.'}
+        danger
+        confirmText="Delete All"
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setModal({ open: false })}
+      />
+
       <div className="page-header">
         <h2><List size={20} /> Rounds</h2>
         <Link to="/"><button className="primary"><Plus size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />New Round</button></Link>
@@ -231,6 +298,28 @@ export default function SessionList() {
                   </span>
                   {s.status !== 'running' && (
                     <>
+                      {admin && (
+                        sessionTickets[s.id] ? (
+                          <a
+                            href={`https://katalon.atlassian.net/browse/${sessionTickets[s.id]}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={`Jira: ${sessionTickets[s.id]}`}
+                            style={{ fontSize: '0.65rem', padding: '0.15em 0.4em', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: '0.15rem', textDecoration: 'none', border: '1px solid var(--accent)', borderRadius: '4px' }}
+                          >
+                            <Bug size={10} /> {sessionTickets[s.id]}
+                          </a>
+                        ) : (
+                          <button
+                            onClick={() => handleLogBug(s.id)}
+                            disabled={loggingBug === s.id}
+                            title="Log bug to Jira"
+                            style={{ fontSize: '0.65rem', padding: '0.15em 0.4em' }}
+                          >
+                            {loggingBug === s.id ? <Loader size={10} className="spinner" /> : <Bug size={10} />}
+                          </button>
+                        )
+                      )}
                       <button onClick={() => handleRerun(s)} disabled={rerunning === s.id} title="Rematch — new game, same settings" style={{ fontSize: '0.65rem', padding: '0.15em 0.4em' }}>
                         {rerunning === s.id ? <span className="spinner" /> : <RotateCcw size={10} />}
                       </button>

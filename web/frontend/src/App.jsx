@@ -15,6 +15,9 @@ import EnvironmentSettings from './components/EnvironmentSettings'
 import LoadTestUsers from './components/LoadTestUsers'
 import SuperfightArena from './components/SuperfightArena'
 import Guideline from './components/Guideline'
+import NotificationPanel from './components/NotificationPanel'
+import FeedbackPanel from './components/FeedbackPanel'
+import AskJoePanel from './components/AskJoePanel'
 import { listSessions, listMatches, checkHealth, getConfig, login, getMe, logout } from './api'
 
 function AdminButton() {
@@ -209,7 +212,11 @@ function App() {
               <Swords size={14} />
               <span>The goal isn't to destroy Kai — it's to make Kai undestroyable.</span>
             </div>
-            <AdminButton />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <FeedbackPanel />
+              <NotificationPanel />
+              <AdminButton />
+            </div>
           </div>
           <Routes>
             <Route path="/" element={<SessionLauncher />} />
@@ -231,6 +238,7 @@ function App() {
             <span><Code size={12} style={{ verticalAlign: 'middle', marginRight: '0.3rem' }} />Joe vs Kai — AI Agent Test Arena</span>
           </footer>
         </main>
+        <AskJoePanel />
       </div>
     </AdminContext.Provider>
   )

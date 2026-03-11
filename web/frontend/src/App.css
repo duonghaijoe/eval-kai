@@ -124,15 +124,16 @@
   justify-content: space-between;
   align-items: center;
   padding: 0.5rem 2rem;
-  background: var(--katalon-navy);
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: #ffffff;
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
 .app-slogan {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.78rem;
-  color: rgba(255,255,255,0.7);
+  color: var(--text-muted);
   font-style: italic;
 }
 .admin-bar {
@@ -141,7 +142,7 @@
   align-items: center;
   gap: 0.4rem;
   font-size: 0.75rem;
-  color: rgba(255,255,255,0.7);
+  color: var(--text-secondary);
 }
 .admin-login-btn {
   display: flex;
@@ -150,9 +151,9 @@
   padding: 0.25em 0.65em;
   font-size: 0.72rem;
   background: transparent;
-  border: 1px solid rgba(255,255,255,0.2);
+  border: 1px solid var(--border);
   border-radius: 5px;
-  color: rgba(255,255,255,0.6);
+  color: var(--text-muted);
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -162,9 +163,9 @@
   align-items: center;
   padding: 0.2em 0.35em;
   background: transparent;
-  border: 1px solid rgba(255,255,255,0.2);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  color: rgba(255,255,255,0.5);
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 0;
   transition: all 0.15s;
