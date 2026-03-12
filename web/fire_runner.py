@@ -115,8 +115,7 @@ async def run_fire_session(
         "--verbose",
         "--model", model,
         "--max-turns", str(max_turns * 3 + 10),  # each round = ~2 turns (tool_use + result), plus start/end/report
-        "--permission-mode", "bypassPermissions",  # headless subprocess needs to run Bash without prompts
-        "--allowedTools", "Bash",  # only needs Bash for kai_conversation.py
+        "--allowedTools", "Bash",  # -p mode skips trust dialog; allowedTools auto-approves Bash
     ]
 
     # Build env vars so kai_conversation.py --env uses the active profile
