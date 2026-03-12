@@ -310,6 +310,34 @@ export async function resetEnvConfig() {
   return res.json();
 }
 
+export async function discoverAccounts(params) {
+  const res = await fetch(`${BASE}/api/env-config/discover-accounts`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(params),
+  });
+  if (res.status === 401) throw new Error('Admin login required');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to discover accounts');
+  }
+  return res.json();
+}
+
+export async function discoverProjects(params) {
+  const res = await fetch(`${BASE}/api/env-config/discover-projects`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(params),
+  });
+  if (res.status === 401) throw new Error('Admin login required');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to discover projects');
+  }
+  return res.json();
+}
+
 // ── Load Test Users ─────────────────────────────────────────────
 
 export async function listLoadTestUsers(envKey) {

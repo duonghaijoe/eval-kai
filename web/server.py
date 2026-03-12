@@ -1210,6 +1210,7 @@ async def env_health_check(env_key: str):
         result["kai"]["auth_method"] = "credentials" if has_creds else ".env fallback"
         result["kai"]["login_url"] = env.get("login_url", "")
         result["kai"]["platform_url"] = env.get("platform_url", "")
+        result["kai"]["base_url"] = env.get("base_url", "")
 
         # Step 1: Authenticate (get bearer token) — in thread to avoid blocking
         t0 = _time.time()
@@ -1230,14 +1231,14 @@ async def env_health_check(env_key: str):
             result["kai"]["auth_ok"] = False
             err_msg = str(auth_err)
             if "500" in err_msg:
-                result["kai"]["response"] = f"Login API returned 500 — check credentials (email, password, account) for {env.get('name', env_key)}. POST {env.get('login_url')} with platform_url={env.get('platform_url')}"
+                result["kai"]["response"] = f"Login API returned 500 — check credentials (email, password, account) for {env.get('name', env_key)}. POST {env.get('login_url')} with base_url={env.get('base_url')}"
             else:
                 result["kai"]["response"] = f"Auth failed: {err_msg[:250]}"
             raise
 
-        # Step 2: Send "Hi" to Kai (run in thread to avoid blocking event loop)
+        # Step 2: Ask Kai to confirm project context (validates env match)
         def _kai_chat():
-            return kai.chat("Hi")
+            return kai.chat("What is the current project name and project id you are working on?")
 
         chat_result = await asyncio.to_thread(_kai_chat)
         latency = (_time.time() - t0) * 1000
@@ -1246,7 +1247,7 @@ async def env_health_check(env_key: str):
         result["kai"]["latency_ms"] = round(latency, 1)
         if chat_result.text:
             result["kai"]["ok"] = True
-            result["kai"]["response"] = chat_result.text[:300]
+            result["kai"]["response"] = chat_result.text[:500]
             result["kai"]["status"] = chat_result.status
             result["kai"]["ttfb_ms"] = round(chat_result.analytics.ttfb_ms, 1)
             result["kai"]["total_ms"] = round(chat_result.analytics.total_ms, 1)
@@ -1402,6 +1403,82 @@ def delete_env_config(env_key: str, user: str = Depends(require_admin)):
 @app.post("/api/env-config/reset")
 def reset_env_config_endpoint(user: str = Depends(require_admin)):
     return reset_env_config()
+
+
+@app.post("/api/env-config/discover-accounts")
+async def discover_accounts_endpoint(request: dict, user: str = Depends(require_admin)):
+    """Discover accounts the user belongs to via Keycloak login.
+
+    Body: {platform_url, email, password}  OR  {env_key}
+    Returns: {accounts: [{id, name}, ...]}
+    """
+    from platform_discovery import discover_accounts
+
+    # Read from DB if env_key provided (for stored password), then let form values override
+    platform_url = request.get("platform_url", "")
+    email = request.get("email", "")
+    password = request.get("password", "")
+
+    env_key = request.get("env_key")
+    if env_key:
+        from env_config import get_env_by_key
+        env = get_env_by_key(env_key)
+        creds = env.get("credentials", {})
+        platform_url = platform_url or env.get("platform_url", "")
+        email = email or creds.get("email", "")
+        password = password or creds.get("password", "")
+
+    if not platform_url or not email or not password:
+        raise HTTPException(400, "Missing platform_url, email, or password")
+
+    try:
+        accounts = await discover_accounts(platform_url, email, password)
+        return {"accounts": accounts}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to discover accounts: {e}")
+
+
+@app.post("/api/env-config/discover-projects")
+async def discover_projects_endpoint(request: dict, user: str = Depends(require_admin)):
+    """Discover projects for a specific account.
+
+    Body: {platform_url, login_url, email, password, account}  OR  {env_key, account?}
+    Returns: {projects: [{id, name, org_id, org_name, account_uuid, ...}, ...]}
+    """
+    from platform_discovery import discover_projects
+
+    # Read from DB if env_key provided, then let form values override
+    platform_url = request.get("platform_url", "")
+    login_url = request.get("login_url", "")
+    email = request.get("email", "")
+    password = request.get("password", "")
+    account = request.get("account", "")
+
+    env_key = request.get("env_key")
+    if env_key:
+        from env_config import get_env_by_key
+        env = get_env_by_key(env_key)
+        creds = env.get("credentials", {})
+        platform_url = platform_url or env.get("platform_url", "")
+        login_url = login_url or env.get("login_url", "")
+        email = email or creds.get("email", "")
+        password = password or creds.get("password", "")
+        account = account or creds.get("account", "")
+
+    login_url = login_url or "https://to3-devtools.vercel.app/api/login"
+
+    if not all([platform_url, login_url, email, password, account]):
+        raise HTTPException(400, "Missing required fields (platform_url, login_url, email, password, account)")
+
+    try:
+        projects = await discover_projects(platform_url, login_url, email, password, account)
+        return {"projects": projects}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to discover projects: {e}")
 
 
 @app.put("/api/config")
@@ -1934,10 +2011,10 @@ async def websocket_session(ws: WebSocket, session_id: str):
 
 # ── Ask Joe Chatbot ──────────────────────────────────────────────
 
-ASK_JOE_SYSTEM = """You are Joe, a helpful assistant for the "Joe vs Kai — AI Agent Test Arena" tool. You ONLY answer questions about how to use this tool. If a question is unrelated to this tool, politely decline and redirect.
+ASK_JOE_SYSTEM = """You are Joe, a helpful assistant for the "Test Kai — AI Agent Test Arena" tool. You ONLY answer questions about how to use this tool. If a question is unrelated to this tool, politely decline and redirect.
 
 ## What This Tool Does
-Joe vs Kai is a testing platform for Katalon's AI agent "Kai". Users create test conversations (matches) to evaluate Kai's quality, speed, and accuracy.
+Test Kai is a testing platform for Katalon's AI agent "Kai". Users create test conversations (matches) to evaluate Kai's quality, speed, and accuracy.
 
 ## Key Pages & Features
 

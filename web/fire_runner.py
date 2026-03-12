@@ -15,6 +15,7 @@ from typing import Callable, Optional
 
 import database as db
 from env_config import get_active_env, load_env_config
+from rubric import score_latency
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ async def run_fire_session(
         "--verbose",
         "--model", model,
         "--max-turns", str(max_turns * 3 + 10),  # each round = ~2 turns (tool_use + result), plus start/end/report
+        "--dangerously-skip-permissions",  # headless subprocess needs to run Bash without prompts
     ]
 
     # Build env vars so kai_conversation.py --env uses the active profile
@@ -176,11 +178,14 @@ async def run_fire_session(
     logger.info(f"Fire {session_id}: using env profile base_url={env.get('base_url')} project={env.get('project_id')} token_pre_resolved={bool(pre_token)}")
 
     try:
+        # Set cwd to project root so Claude CLI can access scripts/ directory
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=subprocess_env,
+            cwd=project_root,
         )
 
         full_output = []
@@ -257,10 +262,35 @@ async def run_fire_session(
                         item_type = item.get("type", "")
                         if item_type == "tool_result":
                             content = item.get("content", "")
+                            # Save round results to DB incrementally (so page refresh shows progress)
+                            content_str = str(content)
+                            json_match = re.search(r'(\{[\s\S]*\})\s*$', content_str)
+                            if json_match:
+                                try:
+                                    parsed = json.loads(json_match.group(1))
+                                    rn = parsed.get("round_number")
+                                    kai_resp = parsed.get("assistant_response", "")
+                                    if rn and kai_resp:
+                                        ttfb = parsed.get("ttfb_ms", 0)
+                                        total = parsed.get("total_ms", 0)
+                                        latency = score_latency(ttfb, total)
+                                        db.insert_turn(
+                                            session_id=session_id,
+                                            turn_number=rn,
+                                            user_message=parsed.get("user_message", ""),
+                                            status=parsed.get("status", "input-required"),
+                                            assistant_response=kai_resp,
+                                            ttfb_ms=ttfb,
+                                            total_ms=total,
+                                            eval_latency=latency,
+                                        )
+                                        logger.info(f"Fire {session_id}: saved round {rn} to DB (latency={latency})")
+                                except (json.JSONDecodeError, Exception) as parse_err:
+                                    logger.debug(f"Fire {session_id}: could not parse round JSON: {parse_err}")
                             if on_event:
                                 await _safe_callback(on_event, session_id, {
                                     "type": "fire_tool_result",
-                                    "content_preview": str(content)[:1000],
+                                    "content_preview": content_str[:5000],
                                 })
 
             elif event_type == "result":
@@ -363,26 +393,43 @@ def _parse_report_text(text: str) -> Optional[dict]:
 
 
 def _save_fire_report_to_db(session_id: str, report: dict):
-    """Save the fire report turns and evaluation to the database."""
+    """Save the fire report turns and evaluation to the database.
+
+    Turns may already exist from incremental saves — update with eval scores if so.
+    """
     turns = report.get("turns", [])
     for t in turns:
         eval_data = t.get("eval", {})
-        db.insert_turn(
-            session_id=session_id,
-            turn_number=t.get("turn_number", 0),
-            user_message=t.get("user_message", ""),
-            assistant_response=t.get("assistant_response_preview", ""),
-            status=t.get("status", ""),
-            ttfb_ms=t.get("ttfb_ms", 0),
-            total_ms=t.get("total_ms", 0),
-            poll_count=t.get("poll_count", 0),
-            tool_calls=t.get("tool_calls", []),
-            error=t.get("error"),
-            eval_relevance=eval_data.get("relevance"),
-            eval_accuracy=eval_data.get("accuracy"),
-            eval_helpfulness=eval_data.get("helpfulness"),
-            eval_tool_usage=eval_data.get("tool_usage"),
-        )
+        turn_number = t.get("turn_number", 0)
+        # Check if turn already saved incrementally
+        existing = db.get_turns(session_id, turn_number)
+        if existing:
+            # Update with eval scores from the fire report
+            db.update_turn_eval(
+                session_id=session_id,
+                turn_number=turn_number,
+                eval_relevance=eval_data.get("relevance"),
+                eval_accuracy=eval_data.get("accuracy"),
+                eval_helpfulness=eval_data.get("helpfulness"),
+                eval_tool_usage=eval_data.get("tool_usage"),
+            )
+        else:
+            db.insert_turn(
+                session_id=session_id,
+                turn_number=turn_number,
+                user_message=t.get("user_message", ""),
+                assistant_response=t.get("assistant_response_preview", ""),
+                status=t.get("status", ""),
+                ttfb_ms=t.get("ttfb_ms", 0),
+                total_ms=t.get("total_ms", 0),
+                poll_count=t.get("poll_count", 0),
+                tool_calls=t.get("tool_calls", []),
+                error=t.get("error"),
+                eval_relevance=eval_data.get("relevance"),
+                eval_accuracy=eval_data.get("accuracy"),
+                eval_helpfulness=eval_data.get("helpfulness"),
+                eval_tool_usage=eval_data.get("tool_usage"),
+            )
 
     evaluation = report.get("evaluation", {})
     if evaluation:

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity, Bot, Bug, AlertCircle, FileCheck, XCircle, ChevronRight, ChevronDown, Eye, Edit3, Send, Copy } from 'lucide-react'
-import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth, getConfig, updateConfig, getJiraConfig, updateJiraConfig, testJiraConnection, getJiraFilterUrl, getSubmissions, approveSubmission, rejectSubmission, deleteCustomScenario, createCustomScenario, updateCustomScenario, getScenarios, hideScenario } from '../api'
+import { Settings, Globe, CheckCircle, Save, RotateCcw, Lock, Plus, Trash2, ExternalLink, Key, Heart, HeartOff, Activity, Bot, Bug, AlertCircle, FileCheck, XCircle, ChevronRight, ChevronDown, Eye, Edit3, Send, Copy, RefreshCw, Building2, FolderOpen } from 'lucide-react'
+import { getEnvConfig, updateEnvConfig, resetEnvConfig, deleteEnvProfile, checkEnvHealth, checkJoeBotHealth, startJoeBotAuth, completeJoeBotAuth, getConfig, updateConfig, getJiraConfig, updateJiraConfig, testJiraConnection, getJiraFilterUrl, getSubmissions, approveSubmission, rejectSubmission, deleteCustomScenario, createCustomScenario, updateCustomScenario, getScenarios, hideScenario, discoverAccounts, discoverProjects } from '../api'
 import { useAdmin } from '../AdminContext'
 
 function HealthResult({ health }) {
@@ -25,8 +25,16 @@ function HealthResult({ health }) {
         )}
       </div>
       {kai.ok && kai.response && (
-        <div style={{ marginTop: '0.3rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxHeight: '3rem', overflow: 'hidden' }}>
-          Kai: "{kai.response.slice(0, 150)}{kai.response.length > 150 ? '...' : ''}"
+        <div style={{ marginTop: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.72rem', lineHeight: '1.5' }}>
+          <div style={{ fontWeight: 600, marginBottom: '0.2rem', color: 'var(--text-primary)' }}>Kai says:</div>
+          <div
+            style={{ padding: '0.4rem 0.6rem', background: 'var(--bg-card)', borderRadius: '6px', border: '1px solid var(--border)', whiteSpace: 'pre-line' }}
+            dangerouslySetInnerHTML={{ __html: kai.response.slice(0, 400)
+              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+              .replace(/- /g, '<br/>• ')
+              .replace(/\n/g, '<br/>')
+            }}
+          />
         </div>
       )}
       {!kai.ok && kai.response && (
@@ -383,6 +391,13 @@ function EnvCard({ envKey, env, isActive, onSelect, onEdit, onDelete, readOnly }
   const [editing, setEditing] = useState(false)
   const [healthChecking, setHealthChecking] = useState(false)
   const [health, setHealth] = useState(null)
+  // Discovery state
+  const [discoveredAccounts, setDiscoveredAccounts] = useState([])
+  const [discoveredProjects, setDiscoveredProjects] = useState([])
+  const [loadingAccounts, setLoadingAccounts] = useState(false)
+  const [loadingProjects, setLoadingProjects] = useState(false)
+  const [accountError, setAccountError] = useState(null)
+  const [projectError, setProjectError] = useState(null)
   const creds = env.credentials || {}
   const hasCreds = creds.has_credentials
   const hasPassword = creds.has_password
@@ -473,51 +488,24 @@ function EnvCard({ envKey, env, isActive, onSelect, onEdit, onDelete, readOnly }
 
       {editing && !readOnly && (
         <div style={{ marginTop: '0.75rem', fontSize: '0.78rem' }}>
+          {/* URLs */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
             <div>
               <label>Name</label>
               <input value={env.name || ''} onChange={e => onEdit(envKey, { ...env, name: e.target.value })} />
             </div>
             <div>
-              <label>Base URL</label>
-              <input value={env.base_url || ''} onChange={e => onEdit(envKey, { ...env, base_url: e.target.value })} placeholder="https://..." />
-            </div>
-            <div>
-              <label>Login URL</label>
-              <input value={env.login_url || ''} onChange={e => onEdit(envKey, { ...env, login_url: e.target.value })} />
-            </div>
-            <div>
-              <label>Platform URL</label>
-              <input value={env.platform_url || ''} onChange={e => onEdit(envKey, { ...env, platform_url: e.target.value })} />
-            </div>
-            <div>
-              <label>Project ID</label>
-              <input value={env.project_id || ''} onChange={e => onEdit(envKey, { ...env, project_id: e.target.value })} />
-            </div>
-            <div>
-              <label>Project Name</label>
-              <input value={env.project_name || ''} onChange={e => onEdit(envKey, { ...env, project_name: e.target.value })} />
-            </div>
-            <div>
-              <label>Org ID</label>
-              <input value={env.org_id || ''} onChange={e => onEdit(envKey, { ...env, org_id: e.target.value })} />
-            </div>
-            <div>
-              <label>Account ID</label>
-              <input value={env.account_id || ''} onChange={e => onEdit(envKey, { ...env, account_id: e.target.value })} />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <label>Account Name</label>
-              <input value={env.account_name || ''} onChange={e => onEdit(envKey, { ...env, account_name: e.target.value })} />
+              <label>Environment URL (for discovery)</label>
+              <input value={env.platform_url || ''} onChange={e => onEdit(envKey, { ...env, platform_url: e.target.value })} placeholder="https://platform.staging.katalon.com" />
             </div>
           </div>
 
-          {/* Credentials */}
+          {/* Step 1: Credentials */}
           <div style={{ marginTop: '0.6rem', padding: '0.6rem', background: 'var(--bg-primary)', borderRadius: '6px' }}>
             <div style={{ fontWeight: 600, fontSize: '0.75rem', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-              <Key size={12} /> TestOps Credentials
+              <Key size={12} /> Step 1: Credentials
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.4rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
               <div>
                 <label>Email</label>
                 <input value={creds.email || ''} onChange={e => updateCred('email', e.target.value)} placeholder="user@katalon.com" />
@@ -526,15 +514,236 @@ function EnvCard({ envKey, env, isActive, onSelect, onEdit, onDelete, readOnly }
                 <label>Password / API Key {hasPassword && <span style={{ color: 'var(--green)', fontSize: '0.65rem' }}>(set)</span>}</label>
                 <input type="password" defaultValue="" onChange={e => updateCred('password', e.target.value)} placeholder={hasPassword ? 'Leave blank to keep current' : 'Enter password'} />
               </div>
-              <div>
-                <label>Account</label>
-                <input value={creds.account || ''} onChange={e => updateCred('account', e.target.value)} placeholder="account_id" />
-              </div>
             </div>
             <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
               Leave blank to fall back to server .env credentials.
             </div>
           </div>
+
+          {/* Step 2: Account Discovery */}
+          <div style={{ marginTop: '0.6rem', padding: '0.6rem', background: 'var(--bg-primary)', borderRadius: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                <Building2 size={12} /> Step 2: Choose Account
+              </div>
+              <button
+                onClick={async () => {
+                  setLoadingAccounts(true)
+                  setAccountError(null)
+                  setDiscoveredAccounts([])
+                  try {
+                    const result = await discoverAccounts({
+                      platform_url: env.platform_url,
+                      email: creds.email,
+                      password: creds.password,
+                      ...(creds.has_password && !creds.password ? { env_key: envKey } : {}),
+                    })
+                    setDiscoveredAccounts(result.accounts || [])
+                    if (!result.accounts?.length) {
+                      setAccountError('Single account detected — enter Account ID manually or use the project discovery below')
+                    }
+                  } catch (e) {
+                    setAccountError(e.message)
+                  } finally {
+                    setLoadingAccounts(false)
+                  }
+                }}
+                disabled={loadingAccounts || (!creds.email || (!creds.password && !creds.has_password)) || !env.platform_url}
+                style={{ fontSize: '0.68rem', padding: '0.2em 0.6em' }}
+                title={!env.platform_url ? 'Enter Platform URL first' : (!creds.email ? 'Enter email first' : '')}
+              >
+                {loadingAccounts
+                  ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Fetching...</>
+                  : <><RefreshCw size={10} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} /> Fetch Accounts</>
+                }
+              </button>
+            </div>
+
+            {accountError && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--red)', marginBottom: '0.4rem', padding: '0.3rem 0.5rem', background: 'rgba(220,38,38,0.06)', borderRadius: '4px' }}>
+                {accountError}
+              </div>
+            )}
+
+            {discoveredAccounts.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                {discoveredAccounts.map(acct => (
+                  <div
+                    key={acct.id}
+                    onClick={() => {
+                      onEdit(envKey, (currentEnv) => {
+                        const currentCreds = currentEnv.credentials || {}
+                        const updates = {
+                          ...currentEnv,
+                          account_name: acct.name,
+                          credentials: { ...currentCreds, account: acct.id },
+                        }
+                        if (acct.url) {
+                          updates.base_url = acct.url.split('/organization/')[0]
+                        }
+                        return updates
+                      })
+                      setDiscoveredProjects([])
+                      setProjectError(null)
+                    }}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '0.35rem 0.6rem', borderRadius: '4px', cursor: 'pointer',
+                      border: `1px solid ${creds.account === acct.id || creds.account === acct.id + '_true' ? 'var(--accent)' : 'var(--border)'}`,
+                      background: creds.account === acct.id || creds.account === acct.id + '_true' ? 'rgba(99,102,241,0.06)' : 'white',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '0.75rem' }}>
+                        <strong>{acct.name}</strong>
+                        <span style={{ color: 'var(--text-muted)', marginLeft: '0.4rem' }}>#{acct.id}</span>
+                      </div>
+                      {acct.url && (
+                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{acct.url}</div>
+                      )}
+                    </div>
+                    {(creds.account === acct.id || creds.account === acct.id + '_true') && (
+                      <CheckCircle size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+                <div>
+                  <label>Account ID</label>
+                  <input value={creds.account || ''} onChange={e => updateCred('account', e.target.value)} placeholder="e.g. 1996096" />
+                </div>
+                <div>
+                  <label>Account Name</label>
+                  <input value={env.account_name || ''} onChange={e => onEdit(envKey, { ...env, account_name: e.target.value })} placeholder="e.g. Katalon on Katalon" />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Step 3: Project Discovery */}
+          <div style={{ marginTop: '0.6rem', padding: '0.6rem', background: 'var(--bg-primary)', borderRadius: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                <FolderOpen size={12} /> Step 3: Choose Project
+              </div>
+              <button
+                onClick={async () => {
+                  setLoadingProjects(true)
+                  setProjectError(null)
+                  setDiscoveredProjects([])
+                  try {
+                    const result = await discoverProjects({
+                      platform_url: env.platform_url,
+                      login_url: env.login_url || 'https://to3-devtools.vercel.app/api/login',
+                      email: creds.email,
+                      password: creds.password,
+                      account: creds.account,
+                      ...(creds.has_password && !creds.password ? { env_key: envKey } : {}),
+                    })
+                    setDiscoveredProjects(result.projects || [])
+                    if (!result.projects?.length) {
+                      setProjectError('No projects found for this account')
+                    }
+                  } catch (e) {
+                    setProjectError(e.message)
+                  } finally {
+                    setLoadingProjects(false)
+                  }
+                }}
+                disabled={loadingProjects || !creds.account}
+                style={{ fontSize: '0.68rem', padding: '0.2em 0.6em' }}
+                title={!creds.account ? 'Select an account first' : 'Fetch projects for this account'}
+              >
+                {loadingProjects
+                  ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Fetching...</>
+                  : <><RefreshCw size={10} style={{ verticalAlign: 'middle', marginRight: '0.15rem' }} /> Fetch Projects</>
+                }
+              </button>
+            </div>
+
+            {projectError && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--red)', marginBottom: '0.4rem', padding: '0.3rem 0.5rem', background: 'rgba(220,38,38,0.06)', borderRadius: '4px' }}>
+                {projectError}
+              </div>
+            )}
+
+            {discoveredProjects.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: '200px', overflowY: 'auto', marginBottom: '0.5rem' }}>
+                {discoveredProjects.map(proj => (
+                  <div
+                    key={proj.id}
+                    onClick={() => {
+                      onEdit(envKey, (currentEnv) => ({
+                        ...currentEnv,
+                        project_id: String(proj.id),
+                        project_name: proj.name,
+                        org_id: proj.org_id ? String(proj.org_id) : currentEnv.org_id,
+                        account_id: proj.account_uuid || currentEnv.account_id,
+                        account_name: proj.org_name || currentEnv.account_name,
+                      }))
+                    }}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '0.35rem 0.6rem', borderRadius: '4px', cursor: 'pointer',
+                      border: `1px solid ${env.project_id === String(proj.id) ? 'var(--accent)' : 'var(--border)'}`,
+                      background: env.project_id === String(proj.id) ? 'rgba(99,102,241,0.06)' : 'white',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 600 }}>{proj.name}</div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                        ID: {proj.id} | Org: {proj.org_name || 'N/A'} ({proj.org_id || '-'})
+                      </div>
+                    </div>
+                    {env.project_id === String(proj.id) && (
+                      <CheckCircle size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Always show config fields — populated by project selection or editable manually */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+              <div>
+                <label>Project ID</label>
+                <input value={env.project_id || ''} onChange={e => onEdit(envKey, { ...env, project_id: e.target.value })} />
+              </div>
+              <div>
+                <label>Project Name</label>
+                <input value={env.project_name || ''} onChange={e => onEdit(envKey, { ...env, project_name: e.target.value })} />
+              </div>
+              <div>
+                <label>Org ID</label>
+                <input value={env.org_id || ''} onChange={e => onEdit(envKey, { ...env, org_id: e.target.value })} />
+              </div>
+              <div>
+                <label>Account UUID</label>
+                <input value={env.account_id || ''} onChange={e => onEdit(envKey, { ...env, account_id: e.target.value })} />
+              </div>
+              <div>
+                <label>Base URL (Kai agent)</label>
+                <input value={env.base_url || ''} onChange={e => onEdit(envKey, { ...env, base_url: e.target.value })} placeholder="Auto-set from account domain" />
+              </div>
+              <div>
+                <label>Account Name</label>
+                <input value={env.account_name || ''} onChange={e => onEdit(envKey, { ...env, account_name: e.target.value })} />
+              </div>
+            </div>
+          </div>
+
+          {/* Summary of selected config */}
+          {(env.project_id || env.org_id || env.account_id || env.base_url) && (
+            <div style={{ marginTop: '0.5rem', padding: '0.4rem 0.6rem', background: 'rgba(99,102,241,0.04)', borderRadius: '4px', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+              <strong>Selected:</strong>{' '}
+              {env.account_name && <span>Account: {env.account_name} | </span>}
+              {env.base_url && <span>Domain: {env.base_url} | </span>}
+              {env.project_name && <span>Project: {env.project_name} ({env.project_id}) | </span>}
+              {env.org_id && <span>Org: {env.org_id}</span>}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -949,11 +1158,12 @@ export default function EnvironmentSettings() {
     }
   }
 
-  const handleEditEnv = (envKey, env) => {
-    setConfig(c => ({
-      ...c,
-      environments: { ...c.environments, [envKey]: env },
-    }))
+  const handleEditEnv = (envKey, envOrUpdater) => {
+    setConfig(c => {
+      const currentEnv = c.environments[envKey] || {}
+      const newEnv = typeof envOrUpdater === 'function' ? envOrUpdater(currentEnv) : envOrUpdater
+      return { ...c, environments: { ...c.environments, [envKey]: newEnv } }
+    })
   }
 
   const handleSave = async () => {

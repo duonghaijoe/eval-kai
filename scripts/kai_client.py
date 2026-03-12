@@ -336,16 +336,21 @@ class KaiClient:
     @classmethod
     def _get_or_refresh_token(cls, email, password, account, login_url, platform_url, base_url):
         """Get token from cache or login API. Caches for reuse."""
+        # The Puppeteer login proxy needs the account-specific domain URL (base_url),
+        # not the generic discovery URL (platform_url like platform.qa.katalon.com).
+        # Fall back to platform_url if base_url is not set.
+        login_target_url = base_url or platform_url
+
         # Check cache first
-        cached = _TokenCache.get(email, platform_url, account)
+        cached = _TokenCache.get(email, login_target_url, account)
         if cached:
             return cached
 
         # Login via Puppeteer API (slow ~5-10s)
-        logger.info(f"Requesting new bearer token for {email} on {platform_url}...")
+        logger.info(f"Requesting new bearer token for {email} on {login_target_url}...")
         resp = httpx.post(
             login_url,
-            json={"url": platform_url, "email": email, "password": password, "account": account},
+            json={"url": login_target_url, "email": email, "password": password, "account": account},
             timeout=30,
         )
         resp.raise_for_status()
@@ -356,8 +361,8 @@ class KaiClient:
             raise ValueError(f"Failed to get bearer token: {data}")
 
         # Cache for next time
-        _TokenCache.put(email, platform_url, account, token)
-        logger.info(f"Generated & cached bearer token for {email} on {base_url}")
+        _TokenCache.put(email, login_target_url, account, token)
+        logger.info(f"Generated & cached bearer token for {email} on {login_target_url}")
         return token
 
     def __init__(

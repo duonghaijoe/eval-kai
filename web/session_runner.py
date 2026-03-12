@@ -220,6 +220,8 @@ async def _execute_session(
     conversation_history = []
     thread_id = None
     start_time = time.time()
+    consecutive_failures = 0
+    MAX_CONSECUTIVE_FAILURES = 2  # Stop after 2 consecutive empty/error responses from Kai
 
     for turn_num in range(1, max_turns + 1):
         # Check time limit
@@ -323,7 +325,7 @@ async def _execute_session(
             logger.warning(f"Session {session_id} turn {turn_num}: chat() returned but Kai still working (poll timeout). Marking as incomplete.")
             chat_result.analytics.error_message = (chat_result.analytics.error_message or "") + " [Kai response may be incomplete — poll timeout reached]"
 
-        # Update conversation history
+        # Update conversation history (always include both sides so brain sees full picture)
         conversation_history.append({
             "id": str(int(time.time() * 1000)),
             "role": "user",
@@ -335,6 +337,23 @@ async def _execute_session(
                 "role": "assistant",
                 "content": [{"type": "text", "text": chat_result.text}],
             })
+            consecutive_failures = 0
+        else:
+            # Record empty/error response so brain knows Kai didn't respond
+            error_note = chat_result.analytics.error_message or "No response from Kai"
+            conversation_history.append({
+                "id": str(int(time.time() * 1000) + 1),
+                "role": "assistant",
+                "content": [{"type": "text", "text": f"[ERROR: {error_note}]"}],
+            })
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.warning(f"Session {session_id}: {consecutive_failures} consecutive Kai failures, stopping early")
+                db.update_session(session_id, stop_reason="kai_unresponsive")
+                break
+            # Wait before retrying — give Kai time to recover
+            logger.info(f"Session {session_id}: Kai didn't respond (attempt {consecutive_failures}), waiting 10s before next round")
+            await asyncio.sleep(10)
 
         # Auto-score latency from rubric thresholds
         latency_score = score_latency(

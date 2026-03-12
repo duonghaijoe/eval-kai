@@ -83,7 +83,7 @@ export default function SessionLauncher() {
     try {
       const res = await startSession({
         actorMode: 'explore',
-        goal: 'Quick greeting test: say hello and verify Kai responds properly',
+        goal: 'Ask Kai: what is the current project name and project id? Verify the response matches the expected environment configuration.',
         maxTurns: 1,
         maxTimeS: 120,
         evalModel,

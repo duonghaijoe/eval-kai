@@ -164,10 +164,11 @@ export default function SessionDetail() {
           if (jsonMatch) {
             try {
               const parsed = JSON.parse(jsonMatch[1])
-              if (parsed.round_number && parsed.kai_response) {
+              const kaiResp = parsed.assistant_response || parsed.kai_response
+              if (parsed.round_number && kaiResp) {
                 setLiveTurns(prev => prev.map((t, i) =>
                   (i === parsed.round_number - 1 || t.turn_number === parsed.round_number)
-                    ? { ...t, turn_number: parsed.round_number, user_message: parsed.user_message || t.user_message, assistant_response: parsed.kai_response, status: parsed.status || 'input-required', ttfb_ms: parsed.ttfb_ms, total_ms: parsed.total_ms, pending: false }
+                    ? { ...t, turn_number: parsed.round_number, user_message: parsed.user_message || t.user_message, assistant_response: kaiResp, status: parsed.status || 'input-required', ttfb_ms: parsed.ttfb_ms, total_ms: parsed.total_ms, pending: false }
                     : t
                 ))
                 const ttfb = parsed.ttfb_ms ? `TTFT: ${(parsed.ttfb_ms / 1000).toFixed(1)}s` : ''
@@ -694,9 +695,12 @@ export default function SessionDetail() {
             <div>
               <div className="stat-label">Latency</div>
               <ScoreDisplay value={
-                allTurns.length > 0
-                  ? +(allTurns.filter(t => t.eval_latency).reduce((s, t) => s + t.eval_latency, 0) / allTurns.filter(t => t.eval_latency).length).toFixed(1)
-                  : null
+                (() => {
+                  const withLatency = allTurns.filter(t => t.eval_latency != null && t.eval_latency > 0)
+                  return withLatency.length > 0
+                    ? +(withLatency.reduce((s, t) => s + t.eval_latency, 0) / withLatency.length).toFixed(1)
+                    : null
+                })()
               } />
             </div>
           </div>

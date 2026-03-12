@@ -293,7 +293,12 @@ def get_env_by_key(key: str) -> dict:
         row = conn.execute("SELECT * FROM env_profiles WHERE key = ?", (key,)).fetchone()
         if not row:
             raise ValueError(f"Environment '{key}' not found")
-        return _row_to_dict(row)
+        env = _row_to_dict(row)
+        if not env.get("login_url"):
+            env["login_url"] = "https://to3-devtools.vercel.app/api/login"
+        if not env.get("base_url") and env.get("platform_url"):
+            env["base_url"] = env["platform_url"]
+        return env
 
 
 def get_active_env() -> dict:
@@ -306,7 +311,14 @@ def get_active_env() -> dict:
             # Fallback to .env creds
             creds = _read_dotenv_creds()
             return {**_DEFAULTS["production"], "credentials": creds}
-        return _row_to_dict(row)
+        env = _row_to_dict(row)
+        # Ensure login_url always has a default
+        if not env.get("login_url"):
+            env["login_url"] = "https://to3-devtools.vercel.app/api/login"
+        # Ensure base_url falls back to platform_url if not set
+        if not env.get("base_url") and env.get("platform_url"):
+            env["base_url"] = env["platform_url"]
+        return env
 
 
 def reset_env_config() -> dict:

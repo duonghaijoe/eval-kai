@@ -21,7 +21,7 @@ export default function Guideline() {
       {/* Hero */}
       <div className="card" style={{ padding: '2rem', textAlign: 'center', marginBottom: '1.25rem', background: 'linear-gradient(135deg, var(--katalon-navy) 0%, #2a3f5f 100%)', color: '#fff', borderRadius: 'var(--radius)' }}>
         <div style={{ fontSize: '1.5rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem' }}>
-          <Swords size={36} /> <span style={{ fontSize: '2.5rem', fontWeight: 700 }}>Joe vs Kai</span> <Bot size={36} />
+          <Swords size={36} /> <span style={{ fontSize: '2.5rem', fontWeight: 700 }}>Test <svg style={{ display: 'inline', verticalAlign: 'middle', margin: '0 0.15rem' }} viewBox="0 0 16 16" width="28" height="28" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.32922 14.0581C8.36662 12.18 9.92639 10.636 11.8232 9.6088L12.1685 9.42177L11.8232 9.23474C9.92639 8.20756 8.36662 6.66317 7.32922 4.78504L7.14033 4.44319L6.34521 5.88266C5.8628 6.756 5.19781 7.51252 4.39888 8.10421C3.55127 8.59062 2.76274 8.18698 2.39063 7.84133C1.98314 7.34768 1.74702 6.76425 1.74698 6.13862C1.74707 4.73448 2.93412 3.54189 4.58707 3.10589C2.44914 3.34427 0.800049 4.86908 0.800049 6.716C0.800196 8.09087 2.05235 9.48909 3.61566 10.2371C4.7661 10.8722 5.71277 11.8156 6.34521 12.9605L7.14032 14.4L7.32922 14.0581Z" fill="#FCFCFC"/><path d="M11.607 1.60001C10.9493 2.79082 9.96047 3.77002 8.75794 4.42129C9.96043 5.07255 10.9493 6.05147 11.607 7.24223L12.0576 6.42676C12.3309 5.9318 12.7076 5.50285 13.1604 5.16753C13.6419 4.89108 14.09 5.12169 14.3003 5.31789C14.5303 5.59727 14.6633 5.92748 14.6633 6.28129C14.6633 7.07711 13.9905 7.753 13.0537 8.00001C14.2654 7.8651 15.2 7.00108 15.2 5.95433C15.2 5.17296 14.4866 4.37814 13.5972 3.95516C12.9485 3.59529 12.4146 3.06228 12.0576 2.41583L11.607 1.60001Z" fill="#FCFCFC"/></svg> Kai</span> <Bot size={36} />
         </div>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>The AI Agent Test Arena</h1>
         <p style={{ fontSize: '0.85rem', opacity: 0.8, maxWidth: '600px', margin: '0 auto', lineHeight: 1.6 }}>
@@ -39,7 +39,7 @@ export default function Guideline() {
           <Film size={16} /> What is this tool?
         </h3>
         <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.7, marginBottom: '0.75rem' }}>
-          <strong>Joe vs Kai</strong> is an AI-powered testing framework that pits a human orchestrator (that's Joe, our test director)
+          <strong>Test Kai</strong> is an AI-powered testing framework that pits an AI orchestrator
           against Katalon's Kai AI agent. Think of it as a boxing gym where we train, spar, and evaluate Kai
           across every dimension that matters: speed, accuracy, helpfulness, and the ability to not completely
           lose its mind when 20 users ask it questions at the same time.
