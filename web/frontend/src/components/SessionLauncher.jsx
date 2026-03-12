@@ -244,9 +244,9 @@ export default function SessionLauncher() {
             <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               {[
                 'Smoke test: greeting, test results, generate test cases',
-                'Test Kai\'s context retention across 6 follow-up exchanges',
+                `Test Kai's context retention across ${maxTurns} follow-up exchanges`,
                 'Edge cases: ambiguous requests, out-of-scope, special characters',
-                'Stress test: rapid topic switching across 8 exchanges',
+                `Stress test: rapid topic switching across ${maxTurns} exchanges`,
               ].map(preset => (
                 <button key={preset} type="button" onClick={() => setGoal(preset)}
                   style={{ fontSize: '0.7rem', padding: '0.25em 0.5em' }}>

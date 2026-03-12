@@ -241,7 +241,7 @@ export default function Guideline() {
                 ['Who controls turns?', 'Python loop', 'Claude decides everything', 'Python loop', 'Python loop'],
                 ['Planning', 'Pre-written script', 'Claude decides on the fly', 'No plan — improvises', 'Pre-generates plan, then adapts'],
                 ['Kai interaction', 'Python KaiClient directly', 'Bash → kai_conversation.py', 'Python KaiClient directly', 'Python KaiClient directly'],
-                ['Evaluation', 'Server-side rubric', 'Claude self-evaluates', 'Server-side rubric', 'Server-side rubric'],
+                ['Evaluation', 'Server-side rubric', 'Latency: server rubric, Quality: Claude', 'Server-side rubric', 'Server-side rubric'],
                 ['Claude usage', 'None', '1 long session (all turns)', '1 call per turn', '1 plan call + 1 per turn'],
                 ['Best for', 'Regression, CI/CD', 'Fully hands-off testing', 'Discovery, edge cases', 'Structured but adaptive testing'],
               ].map(([label, ...vals], i) => (
@@ -256,6 +256,7 @@ export default function Guideline() {
           </table>
           <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '0.5rem' }}>
             <strong>Key difference:</strong> Fire mode gives Claude full autonomy — it spawns a subprocess, runs all turns via bash, and self-reports.
+            Latency scoring is consistent across all modes (server-side rubric). Quality scores (relevance, accuracy, helpfulness, tool usage) come from Claude in fire mode and server-side rubric in other modes.
             Explore and Hybrid both keep Python in the driver's seat, only asking Claude to generate the next message each turn.
           </div>
         </div>
