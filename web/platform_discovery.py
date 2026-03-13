@@ -204,15 +204,80 @@ async def discover_projects(
 ) -> list[dict]:
     """Login with account, then fetch projects from the platform API.
 
+    Filters by the account's numeric ID (team.organization.accountId) so only
+    projects belonging to the selected account are returned.  Paginates to
+    fetch all results (up to 500 safety limit).
+
     Returns: [{"id": 55425, "name": "Quality Engineer", "org_id": 34810,
                "org_name": "Manual To Automation", "account_uuid": "fcb31c41-..."}, ...]
     """
-    # Ensure account is in "ID_true" format for the login proxy
+    token, headers, account_id = await _get_token_and_headers(
+        platform_url, login_url, email, password, account
+    )
+
+    # Build filter — scope to selected account if we have the numeric ID
+    filters = []
+    if account_id:
+        filters.append({
+            "field": "team.organization.accountId",
+            "operator": "EQ",
+            "value": account_id,
+        })
+
+    projects = []
+    page_size = 100
+    offset = 0
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while offset < 500:  # safety limit
+            query = json.dumps({
+                "filters": filters,
+                "sorts": [{"field": "id", "desc": False}],
+                "fetches": [],
+                "offset": offset,
+                "limit": page_size,
+            })
+            resp = await client.get(
+                f"{platform_url}/v2/admin/projects",
+                params={"query": query},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            page_data = result.get("data", [])
+            if not page_data:
+                break
+
+            for p in page_data:
+                team = p.get("team", {}) or {}
+                org = team.get("organization", {}) or {}
+                projects.append({
+                    "id": p["id"],
+                    "name": p.get("name", ""),
+                    "status": p.get("status", ""),
+                    "team_id": team.get("id"),
+                    "team_name": team.get("name", ""),
+                    "org_id": org.get("organizationId") or org.get("id"),
+                    "org_name": org.get("name", ""),
+                    "account_id": org.get("accountId"),
+                    "account_uuid": org.get("accountUUID") or "",
+                })
+
+            if len(page_data) < page_size:
+                break
+            offset += page_size
+
+    return projects
+
+
+async def _get_token_and_headers(
+    platform_url: str, login_url: str, email: str, password: str, account: str
+) -> tuple:
+    """Shared auth helper. Returns (token, headers, account_id)."""
     account_param = account
     if account_param and not account_param.endswith("_true") and not account_param.endswith("_false"):
         account_param = f"{account_param}_true"
 
-    # Step 1: Get bearer token via login proxy
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(login_url, json={
             "url": platform_url,
@@ -234,7 +299,6 @@ async def discover_projects(
     if not token:
         raise ValueError(f"Failed to get bearer token: {data}")
 
-    # Extract account_uuid from id_token
     account_uuid = ""
     if id_token:
         import base64
@@ -248,43 +312,136 @@ async def discover_projects(
         except Exception:
             pass
 
-    # Step 2: Fetch projects
+    account_id = None
+    raw = account.split("_")[0]
+    try:
+        account_id = int(raw)
+    except (ValueError, TypeError):
+        pass
+
     headers = {
         "Authorization": f"Bearer {token}",
         "x-account-id": account_uuid,
         "Accept": "application/json",
     }
-    query = json.dumps({
-        "filters": [],
-        "sorts": [{"field": "id", "desc": True}],
-        "fetches": [],
-        "offset": 0,
-        "limit": 100,
-    })
+    return token, headers, account_id
+
+
+async def discover_license_sources(
+    platform_url: str, login_url: str, email: str, password: str, account: str
+) -> list[dict]:
+    """Discover license sources with Available vs Purchased for the account.
+
+    Combines /v2/admin/license-sources (hierarchy & quota) with
+    /v2/admin/license-allocations (assigned user count) to compute:
+    - purchased (quota)
+    - dedicated (sum of child org quotas)
+    - pool (quota - dedicated)
+    - assigned (allocation count from API `total` field)
+    - available (pool - assigned)
+
+    Returns account-level sources (parentId=None) grouped by feature,
+    plus org-level sources relevant to the user's org.
+    """
+    token, headers, account_id = await _get_token_and_headers(
+        platform_url, login_url, email, password, account
+    )
 
     async with httpx.AsyncClient(timeout=30) as client:
+        # Step 1: Fetch all license sources
         resp = await client.get(
-            f"{platform_url}/v2/admin/projects",
-            params={"query": query},
+            f"{platform_url}/v2/admin/license-sources",
+            params={"accountId": account_id} if account_id else {},
             headers=headers,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise ValueError(f"License sources API returned {resp.status_code}: {resp.text[:300]}")
         result = resp.json()
+        all_sources = result.get("data", [])
+        if not isinstance(all_sources, list):
+            all_sources = []
 
-    projects = []
-    for p in result.get("data", []):
-        team = p.get("team", {}) or {}
-        org = team.get("organization", {}) or {}
-        projects.append({
-            "id": p["id"],
-            "name": p.get("name", ""),
-            "status": p.get("status", ""),
-            "team_id": team.get("id"),
-            "team_name": team.get("name", ""),
-            "org_id": org.get("organizationId") or org.get("id"),
-            "org_name": org.get("name", ""),
-            "account_id": org.get("accountId"),
-            "account_uuid": org.get("accountUUID", account_uuid),
-        })
+        # Build parent→children map
+        children_by_parent: dict[int, list] = {}
+        for s in all_sources:
+            pid = s.get("parentId")
+            if pid is not None:
+                children_by_parent.setdefault(pid, []).append(s)
 
-    return projects
+        # Step 2: For each account-level source (parentId=None), get allocation count
+        output = []
+        for s in all_sources:
+            if s.get("parentId") is not None:
+                continue  # skip org-level (shown as children)
+            if s.get("status") != "ACTIVE":
+                continue
+
+            sid = s["id"]
+            feature = s.get("feature", "")
+            purchased = s.get("quota", 0) or 0
+
+            # Sum dedicated quota from child org sources
+            children = children_by_parent.get(sid, [])
+            dedicated = sum(c.get("quota", 0) or 0 for c in children)
+            pool = purchased - dedicated
+
+            # Get assigned count via allocations API (use `total` field for accurate count)
+            assigned = 0
+            try:
+                query = json.dumps({
+                    "filters": [
+                        {"field": "accountId", "operator": "EQ", "value": account_id},
+                        {"field": "licenseSourceId", "operator": "EQ", "value": sid},
+                    ],
+                    "sorts": [],
+                    "fetches": [],
+                    "offset": 0,
+                    "limit": 1,  # we only need the total count
+                })
+                r2 = await client.get(
+                    f"{platform_url}/v2/admin/license-allocations",
+                    params={"query": query},
+                    headers=headers,
+                )
+                if r2.status_code < 400:
+                    alloc_data = r2.json()
+                    assigned = alloc_data.get("total", 0)
+            except Exception:
+                pass
+
+            available = pool - assigned
+
+            # Build org breakdown
+            org_details = []
+            for c in children:
+                if c.get("status") != "ACTIVE":
+                    continue
+                org_details.append({
+                    "id": c["id"],
+                    "org_id": c.get("organizationId"),
+                    "dedicated": c.get("quota", 0),
+                })
+
+            expiry = s.get("expiryDate", "")
+            if isinstance(expiry, (int, float)) and expiry > 0:
+                from datetime import datetime, timezone
+                try:
+                    expiry = datetime.fromtimestamp(expiry / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+                except Exception:
+                    expiry = str(expiry)
+
+            output.append({
+                "id": sid,
+                "feature": feature,
+                "purchased": purchased,
+                "dedicated": dedicated,
+                "pool": pool,
+                "assigned": assigned,
+                "available": available,
+                "expiry_date": expiry,
+                "status": s.get("status", ""),
+                "org_count": len([c for c in children if c.get("status") == "ACTIVE"]),
+                "orgs": org_details,
+            })
+
+    return output

@@ -6,6 +6,13 @@ import remarkGfm from 'remark-gfm'
 import { getSession, connectWebSocket, startSession, formatTime, formatMs, logJiraBug, logJiraSessionBug, getSessionTickets, getJiraFilterUrl } from '../api'
 import { useAdmin } from '../AdminContext'
 
+function safeLatency(v) {
+  if (v == null) return null
+  if (typeof v === 'number') return v
+  if (typeof v === 'object') return null  // legacy dict format — not renderable
+  return Number(v) || null
+}
+
 function ScoreDisplay({ value, max = 5 }) {
   if (value == null) return <span style={{ color: 'var(--text-muted)' }}>-</span>
   const cls = value >= 4 ? 'high' : value >= 3 ? 'mid' : 'low'
@@ -497,9 +504,9 @@ export default function SessionDetail() {
                   )}
 
                   {/* Latency */}
-                  {t.eval_latency != null && (
+                  {safeLatency(t.eval_latency) != null && (
                     <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', flexShrink: 0 }}>
-                      L:{t.eval_latency}/5
+                      L:{safeLatency(t.eval_latency)}/5
                     </span>
                   )}
 
@@ -592,13 +599,13 @@ export default function SessionDetail() {
                         })()}
 
                         {/* Quality scores */}
-                        {(t.eval_relevance || t.eval_accuracy || t.eval_latency) && (
+                        {(t.eval_relevance || t.eval_accuracy || safeLatency(t.eval_latency)) && (
                           <div className="eval-pills">
                             <span className="eval-pill">Rel: <ScoreDisplay value={t.eval_relevance} /></span>
                             <span className="eval-pill">Acc: <ScoreDisplay value={t.eval_accuracy} /></span>
                             <span className="eval-pill">Help: <ScoreDisplay value={t.eval_helpfulness} /></span>
                             <span className="eval-pill">Tool: <ScoreDisplay value={t.eval_tool_usage} /></span>
-                            {t.eval_latency != null && <span className="eval-pill">Latency: <ScoreDisplay value={t.eval_latency} /></span>}
+                            {safeLatency(t.eval_latency) != null && <span className="eval-pill">Latency: <ScoreDisplay value={safeLatency(t.eval_latency)} /></span>}
                           </div>
                         )}
 
@@ -696,9 +703,9 @@ export default function SessionDetail() {
               <div className="stat-label">Latency</div>
               <ScoreDisplay value={
                 (() => {
-                  const withLatency = allTurns.filter(t => t.eval_latency != null && t.eval_latency > 0)
+                  const withLatency = allTurns.map(t => safeLatency(t.eval_latency)).filter(v => v != null && v > 0)
                   return withLatency.length > 0
-                    ? +(withLatency.reduce((s, t) => s + t.eval_latency, 0) / withLatency.length).toFixed(1)
+                    ? +(withLatency.reduce((s, v) => s + v, 0) / withLatency.length).toFixed(1)
                     : null
                 })()
               } />
@@ -793,7 +800,7 @@ export default function SessionDetail() {
                   <td><ScoreDisplay value={t.eval_accuracy} /></td>
                   <td><ScoreDisplay value={t.eval_helpfulness} /></td>
                   <td><ScoreDisplay value={t.eval_tool_usage} /></td>
-                  <td><ScoreDisplay value={t.eval_latency} /></td>
+                  <td><ScoreDisplay value={safeLatency(t.eval_latency)} /></td>
                   <td style={{ color: 'var(--red)', fontSize: '0.7rem', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {t.error || '-'}
                   </td>

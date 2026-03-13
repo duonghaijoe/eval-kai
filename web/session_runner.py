@@ -272,7 +272,7 @@ async def _execute_session(
                     assistant_response="", status="error",
                     ttfb_ms=0, total_ms=0, poll_count=0, tool_calls=[],
                     error="Kai was still processing the previous response (timeout waiting for input-required)",
-                    eval_latency={"grade": "F", "ttfb_grade": "F", "total_grade": "F"},
+                    eval_latency=1,
                 )
                 if on_turn:
                     await _safe_callback(on_turn, session_id, {
@@ -281,7 +281,7 @@ async def _execute_session(
                         "status": "error", "ttfb_ms": 0, "total_ms": 0,
                         "poll_count": 0, "tool_calls": [],
                         "error": "Kai still processing previous response",
-                        "eval": {}, "eval_latency": {"grade": "F"},
+                        "eval": {}, "eval_latency": 1,
                     })
                 continue
             elif ready_status == "error":

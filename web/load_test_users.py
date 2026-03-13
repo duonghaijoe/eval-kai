@@ -70,7 +70,7 @@ class AdminAuth:
 
     def __init__(self, env: dict):
         self.env = env
-        self.base_url = env.get("platform_url", "")
+        self.base_url = env.get("base_url") or env.get("platform_url", "")
         self.login_url = env.get("login_url", "https://to3-devtools.vercel.app/api/login")
         self.admin_token: Optional[str] = None
         self.account_uuid: Optional[str] = None
@@ -99,15 +99,34 @@ class AdminAuth:
         if self.admin_token:
             return
         logger.info(f"Authenticating admin: {self.email} on {self.base_url}")
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(self.login_url, json={
-                "url": self.base_url,
-                "email": self.email,
-                "password": self.password,
-                "account": self.account,
-            })
-            resp.raise_for_status()
-            data = resp.json()
+        last_err = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(self.login_url, json={
+                        "url": self.base_url,
+                        "email": self.email,
+                        "password": self.password,
+                        "account": self.account,
+                    })
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+            except httpx.HTTPStatusError as e:
+                raise RuntimeError(
+                    f"Admin login failed (HTTP {e.response.status_code}) — your role & "
+                    "permissions may not be sufficient to scout fighters on this environment. "
+                    "Please verify the credentials have admin access."
+                ) from e
+            except httpx.RequestError as e:
+                last_err = e
+                logger.warning(f"Login attempt {attempt + 1}/3 failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(3)
+        else:
+            raise RuntimeError(
+                f"Cannot reach login service ({self.login_url}) after 3 attempts: {last_err}"
+            )
 
         token_data = data.get("token", {})
         if isinstance(token_data, dict):
@@ -122,7 +141,11 @@ class AdminAuth:
             self.account_uuid = payload.get("account_uuid", "")
 
         if not self.admin_token:
-            raise RuntimeError("Failed to get admin token")
+            raise RuntimeError(
+                "Failed to get admin token — your role & permissions may not be "
+                "sufficient to scout fighters on this environment. Please check "
+                "that the configured credentials have admin access."
+            )
         logger.info(f"Admin auth OK: account_uuid={self.account_uuid}")
 
 
@@ -180,9 +203,10 @@ class UserProvisioner:
 
             # Step 2: Assign license + invite
             logger.info(f"Assigning license to {email}")
-            lic_source_id = int(env.get("license_source_id", 49))
+            warnings = []
+            lic_source_id = int(env.get("license_source_id") or 49)
             feature = env.get("license_feature", "TESTOPS_G3_FULL")
-            org_id = int(env.get("org_id", 0))
+            org_id = int(env.get("org_id") or 0)
             expiry = (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z"
 
             resp = await self.client.post(f"{base}/v2/admin/license-allocations", json={
@@ -195,8 +219,19 @@ class UserProvisioner:
                 "expiryDate": expiry,
                 "invite": False,  # Do NOT auto-invite — handled separately in step 3
             }, headers=headers)
-            if resp.status_code >= 400 and resp.status_code != 409:
+            if resp.status_code == 403:
+                msg = "License assign forbidden — your role may not have admin permissions on this account"
+                logger.warning(f"License assign failed (403): {resp.text[:300]}")
+                warnings.append(msg)
+            elif resp.status_code >= 400 and resp.status_code != 409:
+                err_detail = ""
+                try:
+                    err_body = resp.json()
+                    err_detail = err_body.get("message", "") or str(err_body.get("errors", ""))
+                except Exception:
+                    pass
                 logger.warning(f"License assign failed ({resp.status_code}): {resp.text[:300]}")
+                warnings.append(f"License assign failed ({resp.status_code}): {err_detail}" if err_detail else f"License assign failed ({resp.status_code})")
             else:
                 lic_data = resp.json()
                 lic_info = lic_data.get("data", lic_data)
@@ -222,15 +257,30 @@ class UserProvisioner:
                     result["testops_user_id"] = testops_uid
                     logger.info(f"TestOps userId from invitation: {testops_uid}")
                 logger.info(f"Invitation sent: token={invitation_token[:20]}..." if invitation_token else "No token")
+            elif resp.status_code == 403:
+                err_body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                err_msgs = err_body.get("errors", [])
+                detail = err_msgs[0] if err_msgs else "insufficient permissions"
+                msg = f"Org invite forbidden — {detail}"
+                logger.warning(f"Invite failed (403): {resp.text[:300]}")
+                warnings.append(msg)
             else:
+                err_detail = ""
+                try:
+                    err_body = resp.json()
+                    err_msgs = err_body.get("errors", [])
+                    err_detail = err_msgs[0] if err_msgs else err_body.get("message", "")
+                except Exception:
+                    pass
                 logger.warning(f"Invite failed ({resp.status_code}): {resp.text[:300]}")
+                warnings.append(f"Org invite failed ({resp.status_code}): {err_detail}" if err_detail else f"Org invite failed ({resp.status_code})")
 
             # Step 4: Accept invitation (Keycloak OAuth)
             if invitation_token:
                 await self._accept_invitation(email, password, invitation_token)
 
             # Step 5: Add to project
-            project_id = int(env.get("project_id", 0))
+            project_id = int(env.get("project_id") or 0)
             if project_id:
                 logger.info(f"Adding {email} to project {project_id}")
                 resp = await self.client.post(f"{base}/v2/admin/project-users", json={
@@ -238,8 +288,18 @@ class UserProvisioner:
                     "email": email,
                     "role": "MEMBER",
                 }, headers=headers)
-                if resp.status_code >= 400 and resp.status_code != 409:
+                if resp.status_code == 403:
+                    logger.warning(f"Add to project failed (403): {resp.text[:300]}")
+                    warnings.append("Add to project forbidden — insufficient permissions")
+                elif resp.status_code >= 400 and resp.status_code != 409:
+                    err_detail = ""
+                    try:
+                        err_body = resp.json()
+                        err_detail = err_body.get("message", "") or str(err_body.get("errors", ""))
+                    except Exception:
+                        pass
                     logger.warning(f"Add to project failed ({resp.status_code}): {resp.text[:300]}")
+                    warnings.append(f"Add to project failed ({resp.status_code}): {err_detail}" if err_detail else f"Add to project failed ({resp.status_code})")
                 else:
                     pu_data = resp.json()
                     pu_info = pu_data.get("data", pu_data)
@@ -258,8 +318,14 @@ class UserProvisioner:
             else:
                 logger.warning(f"Could not find account_user_id for {email} — deactivation will be skipped during teardown")
 
-            result["status"] = "active"
-            logger.info(f"User provisioned: {email} (user_id={result.get('user_id')})")
+            # Determine final status based on warnings
+            if warnings:
+                result["status"] = "error"
+                result["error"] = "; ".join(warnings)
+                logger.warning(f"User {email} created but with errors: {result['error']}")
+            else:
+                result["status"] = "active"
+                logger.info(f"User provisioned: {email} (user_id={result.get('user_id')})")
 
         except Exception as e:
             result["status"] = "error"
@@ -273,7 +339,7 @@ class UserProvisioner:
         await self.auth.ensure_auth()
         headers = self.auth._auth_headers()
         base = self.auth.base_url
-        lic_source_id = int(self.env.get("license_source_id", 49))
+        lic_source_id = int(self.env.get("license_source_id") or 49)
         feature = self.env.get("license_feature", "TESTOPS_G3_FULL")
         try:
             resp = await self.client.get(

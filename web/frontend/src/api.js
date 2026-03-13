@@ -338,6 +338,20 @@ export async function discoverProjects(params) {
   return res.json();
 }
 
+export async function discoverLicenseSources(params) {
+  const res = await fetch(`${BASE}/api/env-config/discover-licenses`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(params),
+  });
+  if (res.status === 401) throw new Error('Admin login required');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to discover license sources');
+  }
+  return res.json();
+}
+
 // ── Load Test Users ─────────────────────────────────────────────
 
 export async function listLoadTestUsers(envKey) {
@@ -778,9 +792,457 @@ export async function deleteFeedback(id) {
 }
 
 
+// ── Data Sources ────────────────────────────────────────────────
+
+export async function listDataSources(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/data-sources${params}`)
+  return res.json()
+}
+
+export async function createDataSource(data) {
+  const res = await fetch(`${BASE}/api/data-sources`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to create data source')
+  }
+  return res.json()
+}
+
+export async function updateDataSource(id, data) {
+  const res = await fetch(`${BASE}/api/data-sources/${id}`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to update data source')
+  }
+  return res.json()
+}
+
+export async function deleteDataSource(id) {
+  const res = await fetch(`${BASE}/api/data-sources/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to delete data source')
+  return res.json()
+}
+
+export async function syncDataSource(id) {
+  const res = await fetch(`${BASE}/api/data-sources/${id}/sync`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Sync failed')
+  }
+  return res.json()
+}
+
+export async function syncAllDataSources(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/data-sources/sync-all${params}`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Sync failed')
+  }
+  return res.json()
+}
+
+export async function getDataSourceItems(id) {
+  const res = await fetch(`${BASE}/api/data-sources/${id}/items`)
+  return res.json()
+}
+
+// ── Test Plans & Cases ──────────────────────────────────────────
+
+export async function generateTestPlan(data) {
+  const res = await fetch(`${BASE}/api/test-plans/generate`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to generate test plan')
+  }
+  return res.json()
+}
+
+export async function listTestPlans(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/test-plans${params}`)
+  return res.json()
+}
+
+export async function getTestPlan(planId) {
+  const res = await fetch(`${BASE}/api/test-plans/${planId}`)
+  if (!res.ok) throw new Error('Test plan not found')
+  return res.json()
+}
+
+export async function deleteTestPlan(planId) {
+  const res = await fetch(`${BASE}/api/test-plans/${planId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to delete test plan')
+  return res.json()
+}
+
+export async function listTestCases(params = {}) {
+  const qs = new URLSearchParams(params).toString()
+  const res = await fetch(`${BASE}/api/test-cases?${qs}`)
+  return res.json()
+}
+
+export async function updateTestCase(id, data) {
+  const res = await fetch(`${BASE}/api/test-cases/${id}`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to update test case')
+  }
+  return res.json()
+}
+
+export async function approveTestCase(id) {
+  const res = await fetch(`${BASE}/api/test-cases/${id}/approve`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to approve')
+  return res.json()
+}
+
+export async function rejectTestCase(id) {
+  const res = await fetch(`${BASE}/api/test-cases/${id}/reject`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to reject')
+  return res.json()
+}
+
+export async function regenerateTestCase(id, feedback) {
+  const res = await fetch(`${BASE}/api/test-cases/${id}/regenerate`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ feedback }),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to regenerate')
+  return res.json()
+}
+
+export async function promoteTestCase(id) {
+  const res = await fetch(`${BASE}/api/test-cases/${id}/promote`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to promote')
+  return res.json()
+}
+
+export async function bulkApproveTestCases(ids) {
+  const res = await fetch(`${BASE}/api/test-cases/bulk-approve`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ ids }),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to bulk approve')
+  return res.json()
+}
+
+export async function deleteTestCase(id) {
+  const res = await fetch(`${BASE}/api/test-cases/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to delete')
+  return res.json()
+}
+
+export async function bulkDeleteTestCases(ids) {
+  const res = await fetch(`${BASE}/api/test-cases/bulk-delete`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ ids }),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to bulk delete')
+  return res.json()
+}
+
+// ── Scout (Scheduled Runs) ──────────────────────────────────────
+
+export async function listScouts(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/scouts${params}`)
+  return res.json()
+}
+
+export async function createScout(data) {
+  const res = await fetch(`${BASE}/api/scouts`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to create scout')
+  }
+  return res.json()
+}
+
+export async function updateScout(id, data) {
+  const res = await fetch(`${BASE}/api/scouts/${id}`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to update scout')
+  return res.json()
+}
+
+export async function deleteScout(id) {
+  const res = await fetch(`${BASE}/api/scouts/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to delete scout')
+  return res.json()
+}
+
+export async function triggerScout(id) {
+  const res = await fetch(`${BASE}/api/scouts/${id}/trigger`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) throw new Error('Failed to trigger scout')
+  return res.json()
+}
+
+export async function runScoutNow(data) {
+  const res = await fetch(`${BASE}/api/scout/run-now`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to run scout')
+  }
+  return res.json()
+}
+
+export async function listScoutRuns(envKey, limit = 50) {
+  const params = new URLSearchParams({ limit })
+  if (envKey) params.set('env_key', envKey)
+  const res = await fetch(`${BASE}/api/scout-runs?${params}`)
+  return res.json()
+}
+
+// ── Coverage & Reports ──────────────────────────────────────────
+
+export async function getRequirementCoverage(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/coverage/requirements${params}`)
+  return res.json()
+}
+
+export async function getMcpToolCoverage(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/coverage/mcp-tools${params}`)
+  return res.json()
+}
+
+export async function getCoverageSummary(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/coverage/summary${params}`)
+  return res.json()
+}
+
+export async function getEnvComparison() {
+  const res = await fetch(`${BASE}/api/reports/env-comparison`)
+  return res.json()
+}
+
+export async function getTrending(envKey, days = 30) {
+  const params = new URLSearchParams({ days })
+  if (envKey) params.set('env_key', envKey)
+  const res = await fetch(`${BASE}/api/reports/trending?${params}`)
+  return res.json()
+}
+
 export function connectWebSocket(sessionId = null) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.host;
   const path = sessionId ? `/ws/${sessionId}` : '/ws';
   return new WebSocket(`${protocol}//${host}${path}`);
+}
+
+// ── Test Management — Folders ────────────────────────────────────
+
+export async function listTestFolders(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/test-folders${params}`)
+  return res.json()
+}
+
+export async function createTestFolder(data) {
+  const res = await fetch(`${BASE}/api/test-folders`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function updateTestFolder(id, data) {
+  const res = await fetch(`${BASE}/api/test-folders/${id}`, {
+    method: 'PUT', headers: authHeaders(), body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function deleteTestFolder(id) {
+  const res = await fetch(`${BASE}/api/test-folders/${id}`, {
+    method: 'DELETE', headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+// ── Test Management — Suites ─────────────────────────────────────
+
+export async function listTestSuites(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/test-suites${params}`)
+  return res.json()
+}
+
+export async function createTestSuite(data) {
+  const res = await fetch(`${BASE}/api/test-suites`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function updateTestSuite(id, data) {
+  const res = await fetch(`${BASE}/api/test-suites/${id}`, {
+    method: 'PUT', headers: authHeaders(), body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function deleteTestSuite(id) {
+  const res = await fetch(`${BASE}/api/test-suites/${id}`, {
+    method: 'DELETE', headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function getSuiteCases(suiteId) {
+  const res = await fetch(`${BASE}/api/test-suites/${suiteId}/cases`)
+  return res.json()
+}
+
+export async function addCasesToSuite(suiteId, caseIds) {
+  const res = await fetch(`${BASE}/api/test-suites/${suiteId}/cases`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify({ case_ids: caseIds }),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function removeCasesFromSuite(suiteId, caseIds) {
+  const res = await fetch(`${BASE}/api/test-suites/${suiteId}/cases`, {
+    method: 'DELETE', headers: authHeaders(), body: JSON.stringify({ case_ids: caseIds }),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function runSuite(suiteId) {
+  const res = await fetch(`${BASE}/api/test-suites/${suiteId}/run`, {
+    method: 'POST', headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+// ── Test Management — Manual Case CRUD ───────────────────────────
+
+export async function createTestCaseManual(data) {
+  const res = await fetch(`${BASE}/api/test-cases`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function bulkMoveCases(caseIds, folderId) {
+  const res = await fetch(`${BASE}/api/test-cases/bulk-move`, {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ case_ids: caseIds, folder_id: folderId }),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function createFromTemplate(templateId, folderId, overrides) {
+  const res = await fetch(`${BASE}/api/test-cases/from-template`, {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ template_id: templateId, folder_id: folderId, overrides }),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function getCaseRunHistory(caseId, limit = 20) {
+  const res = await fetch(`${BASE}/api/test-cases/${caseId}/history?limit=${limit}`)
+  return res.json()
+}
+
+export async function importBuiltinScenarios(folderId) {
+  const params = folderId ? `?folder_id=${folderId}` : ''
+  const res = await fetch(`${BASE}/api/test-management/import-builtins${params}`, {
+    method: 'POST', headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
+  return res.json()
+}
+
+export async function getActualToolCoverage(envKey) {
+  const params = envKey ? `?env_key=${envKey}` : ''
+  const res = await fetch(`${BASE}/api/coverage/actual-tools${params}`)
+  return res.json()
 }

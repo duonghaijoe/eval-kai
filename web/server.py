@@ -38,6 +38,36 @@ from jira_integration import (
     log_bug_for_session, get_tickets_for_session, get_jira_filter_url,
     JiraClient, get_jira_config_full, should_auto_log,
 )
+from data_sources import (
+    init_data_sources_db, create_data_source, get_data_source,
+    list_data_sources, update_data_source, delete_data_source,
+    sync_source, sync_all_sources, get_items_for_source,
+)
+from test_generator import (
+    init_test_generator_db, generate_test_plan, get_test_plan,
+    list_test_plans, list_test_cases, get_test_case, update_test_case,
+    bulk_approve_cases, delete_test_case, bulk_delete_cases,
+    regenerate_case, promote_case_to_scenario,
+    delete_test_plan,
+)
+from scout_runner import (
+    init_scout_db, create_schedule, get_schedule, list_schedules,
+    update_schedule, delete_schedule, list_runs as list_scout_runs,
+    run_scout, start_scheduler,
+)
+from coverage import (
+    init_coverage_db, compute_requirement_coverage, compute_mcp_tool_coverage,
+    compute_coverage_summary, compute_env_comparison, compute_trending,
+)
+from test_management import (
+    init_test_management_db,
+    create_folder, get_folder, list_folders, update_folder, delete_folder,
+    create_suite, get_suite, list_suites, update_suite, delete_suite,
+    add_cases_to_suite, remove_cases_from_suite, get_suite_cases, resolve_smart_suite,
+    create_test_case as create_manual_test_case, create_from_template, bulk_move_cases,
+    record_case_run, get_case_run_history, aggregate_session_tool_calls,
+    get_actual_tool_coverage, import_builtin_scenarios,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -126,6 +156,13 @@ def startup():
     db.init_db()
     init_env_db()
     init_jira_db()
+    init_data_sources_db()
+    init_test_generator_db()
+    init_scout_db()
+    init_coverage_db()
+    init_test_management_db()
+    # Start scout scheduler in background
+    asyncio.get_event_loop().call_soon(lambda: asyncio.ensure_future(start_scheduler()))
     _seed_release_notifications()
     logger.info(f"Database initialized at {db.get_db_path()}")
     logger.info(f"Max concurrent sessions: {MAX_CONCURRENT}, matches: {MAX_CONCURRENT_MATCHES}")
@@ -1461,7 +1498,7 @@ async def discover_projects_endpoint(request: dict, user: str = Depends(require_
         from env_config import get_env_by_key
         env = get_env_by_key(env_key)
         creds = env.get("credentials", {})
-        platform_url = platform_url or env.get("platform_url", "")
+        platform_url = platform_url or env.get("base_url") or env.get("platform_url", "")
         login_url = login_url or env.get("login_url", "")
         email = email or creds.get("email", "")
         password = password or creds.get("password", "")
@@ -1479,6 +1516,46 @@ async def discover_projects_endpoint(request: dict, user: str = Depends(require_
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, f"Failed to discover projects: {e}")
+
+
+@app.post("/api/env-config/discover-licenses")
+async def discover_licenses_endpoint(request: dict, user: str = Depends(require_admin)):
+    """Discover license sources (subscriptions) for an account.
+
+    Body: {env_key}  OR  {platform_url, login_url, email, password, account}
+    Returns: {sources: [{id, name, feature, total_quota, used_quota, available}, ...]}
+    """
+    from platform_discovery import discover_license_sources
+
+    platform_url = request.get("platform_url", "")
+    login_url = request.get("login_url", "")
+    email = request.get("email", "")
+    password = request.get("password", "")
+    account = request.get("account", "")
+
+    env_key = request.get("env_key")
+    if env_key:
+        from env_config import get_env_by_key
+        env = get_env_by_key(env_key)
+        creds = env.get("credentials", {})
+        platform_url = platform_url or env.get("base_url") or env.get("platform_url", "")
+        login_url = login_url or env.get("login_url", "")
+        email = email or creds.get("email", "")
+        password = password or creds.get("password", "")
+        account = account or creds.get("account", "")
+
+    login_url = login_url or "https://to3-devtools.vercel.app/api/login"
+
+    if not all([platform_url, login_url, email, password, account]):
+        raise HTTPException(400, "Missing required fields (platform_url, login_url, email, password, account)")
+
+    try:
+        sources = await discover_license_sources(platform_url, login_url, email, password, account)
+        return {"sources": sources}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to discover license sources: {e}")
 
 
 @app.put("/api/config")
@@ -1587,6 +1664,390 @@ def get_session_tickets(session_id: str):
 @app.get("/api/jira/filter-url")
 def get_filter_url():
     return {"url": get_jira_filter_url()}
+
+
+# ── Data Sources ─────────────────────────────────────────────────
+
+class DataSourceCreate(BaseModel):
+    env_key: str
+    source_type: str  # jira, confluence, mcp_tools, context
+    name: str
+    config: dict = {}
+
+
+class DataSourceUpdate(BaseModel):
+    name: Optional[str] = None
+    source_type: Optional[str] = None
+    config: Optional[dict] = None
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/data-sources")
+def api_list_data_sources(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    sources = list_data_sources(env_key)
+    return {"sources": sources, "env_key": env_key}
+
+
+@app.post("/api/data-sources")
+def api_create_data_source(req: DataSourceCreate, _user: str = Depends(require_admin)):
+    source = create_data_source(
+        env_key=req.env_key, source_type=req.source_type,
+        name=req.name, config=req.config,
+    )
+    return source
+
+
+@app.get("/api/data-sources/{source_id}")
+def api_get_data_source(source_id: str):
+    source = get_data_source(source_id)
+    if not source:
+        raise HTTPException(404, "Data source not found")
+    return source
+
+
+@app.put("/api/data-sources/{source_id}")
+def api_update_data_source(source_id: str, req: DataSourceUpdate, _user: str = Depends(require_admin)):
+    existing = get_data_source(source_id)
+    if not existing:
+        raise HTTPException(404, "Data source not found")
+    kwargs = {k: v for k, v in req.dict().items() if v is not None}
+    updated = update_data_source(source_id, **kwargs)
+    return updated
+
+
+@app.delete("/api/data-sources/{source_id}")
+def api_delete_data_source(source_id: str, _user: str = Depends(require_admin)):
+    if not delete_data_source(source_id):
+        raise HTTPException(404, "Data source not found")
+    return {"ok": True}
+
+
+@app.post("/api/data-sources/{source_id}/sync")
+async def api_sync_data_source(source_id: str):
+    source = get_data_source(source_id)
+    if not source:
+        raise HTTPException(404, "Data source not found")
+    result = await asyncio.to_thread(sync_source, source_id)
+    return result
+
+
+@app.post("/api/data-sources/sync-all")
+async def api_sync_all_data_sources(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    results = await asyncio.to_thread(sync_all_sources, env_key)
+    return {"results": results, "env_key": env_key}
+
+
+@app.get("/api/data-sources/{source_id}/items")
+def api_get_data_source_items(source_id: str):
+    source = get_data_source(source_id)
+    if not source:
+        raise HTTPException(404, "Data source not found")
+    items = get_items_for_source(source_id)
+    return {"items": items, "source": source}
+
+
+# ── Test Plans & Cases ───────────────────────────────────────────
+
+class GenerateTestPlanRequest(BaseModel):
+    env_key: Optional[str] = None
+    source_ids: list = []
+    model: str = "sonnet"
+    name: Optional[str] = None
+
+
+class UpdateTestCaseRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    mode: Optional[str] = None
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    steps: Optional[list] = None
+    goal: Optional[str] = None
+    max_turns: Optional[int] = None
+    tags: Optional[list] = None
+    source_items: Optional[list] = None
+    mcp_tools_tested: Optional[list] = None
+
+
+class RegenerateCaseRequest(BaseModel):
+    feedback: str = ""
+
+
+class BulkApproveRequest(BaseModel):
+    ids: list
+
+
+@app.post("/api/test-plans/generate")
+async def api_generate_test_plan(req: GenerateTestPlanRequest, _user: str = Depends(require_admin)):
+    env_key = req.env_key
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    plan = await asyncio.to_thread(
+        generate_test_plan, env_key, req.source_ids, req.model, req.name
+    )
+    return plan
+
+
+@app.get("/api/test-plans")
+def api_list_test_plans(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    plans = list_test_plans(env_key)
+    return {"plans": plans, "env_key": env_key}
+
+
+@app.get("/api/test-plans/{plan_id}")
+def api_get_test_plan(plan_id: str):
+    plan = get_test_plan(plan_id)
+    if not plan:
+        raise HTTPException(404, "Test plan not found")
+    cases = list_test_cases(plan_id=plan_id)
+    return {"plan": plan, "cases": cases}
+
+
+@app.delete("/api/test-plans/{plan_id}")
+def api_delete_test_plan(plan_id: str, _user: str = Depends(require_admin)):
+    if not delete_test_plan(plan_id):
+        raise HTTPException(404, "Test plan not found")
+    return {"ok": True}
+
+
+@app.get("/api/test-cases")
+def api_list_test_cases(plan_id: Optional[str] = None, env_key: Optional[str] = None,
+                         status: Optional[str] = None, folder_id: Optional[str] = None):
+    if not env_key and not plan_id:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    cases = list_test_cases(plan_id=plan_id, env_key=env_key, status=status, folder_id=folder_id)
+    return {"cases": cases}
+
+
+@app.put("/api/test-cases/{case_id}")
+def api_update_test_case(case_id: str, req: UpdateTestCaseRequest, _user: str = Depends(require_admin)):
+    case = get_test_case(case_id)
+    if not case:
+        raise HTTPException(404, "Test case not found")
+    kwargs = {k: v for k, v in req.dict().items() if v is not None}
+    updated = update_test_case(case_id, **kwargs)
+    return updated
+
+
+@app.post("/api/test-cases/{case_id}/approve")
+def api_approve_test_case(case_id: str, _user: str = Depends(require_admin)):
+    case = get_test_case(case_id)
+    if not case:
+        raise HTTPException(404, "Test case not found")
+    updated = update_test_case(case_id, status="approved")
+    return updated
+
+
+@app.post("/api/test-cases/{case_id}/reject")
+def api_reject_test_case(case_id: str, _user: str = Depends(require_admin)):
+    case = get_test_case(case_id)
+    if not case:
+        raise HTTPException(404, "Test case not found")
+    updated = update_test_case(case_id, status="rejected")
+    return updated
+
+
+@app.post("/api/test-cases/{case_id}/regenerate")
+async def api_regenerate_test_case(case_id: str, req: RegenerateCaseRequest, _user: str = Depends(require_admin)):
+    case = get_test_case(case_id)
+    if not case:
+        raise HTTPException(404, "Test case not found")
+    updated = await asyncio.to_thread(regenerate_case, case_id, req.feedback)
+    return updated
+
+
+@app.post("/api/test-cases/{case_id}/promote")
+def api_promote_test_case(case_id: str, _user: str = Depends(require_admin)):
+    result = promote_case_to_scenario(case_id)
+    if not result:
+        raise HTTPException(400, "Only approved fixed-mode cases can be promoted")
+    return result
+
+
+@app.post("/api/test-cases/bulk-approve")
+def api_bulk_approve_test_cases(req: BulkApproveRequest, _user: str = Depends(require_admin)):
+    count = bulk_approve_cases(req.ids)
+    return {"approved": count}
+
+
+@app.delete("/api/test-cases/{case_id}")
+def api_delete_test_case(case_id: str, _user: str = Depends(require_admin)):
+    ok = delete_test_case(case_id)
+    if not ok:
+        raise HTTPException(404, "Case not found")
+    return {"ok": True}
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: list
+
+
+@app.post("/api/test-cases/bulk-delete")
+def api_bulk_delete_test_cases(req: BulkDeleteRequest, _user: str = Depends(require_admin)):
+    count = bulk_delete_cases(req.ids)
+    return {"deleted": count}
+
+
+# ── Scout Schedules & Runs ───────────────────────────────────────
+
+class CreateScoutRequest(BaseModel):
+    env_key: Optional[str] = None
+    name: str
+    interval: str = "daily"
+    source_ids: list = []
+    auto_generate: bool = True
+    auto_run: bool = False
+    auto_approve: bool = False
+    model: str = "sonnet"
+
+
+class UpdateScoutRequest(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    interval: Optional[str] = None
+    source_ids: Optional[list] = None
+    auto_generate: Optional[bool] = None
+    auto_run: Optional[bool] = None
+    auto_approve: Optional[bool] = None
+    model: Optional[str] = None
+
+
+class RunScoutNowRequest(BaseModel):
+    env_key: Optional[str] = None
+    source_ids: list = []
+    auto_generate: bool = True
+    auto_run: bool = False
+    auto_approve: bool = False
+    model: str = "sonnet"
+
+
+@app.get("/api/scouts")
+def api_list_scouts(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    schedules = list_schedules(env_key)
+    return {"schedules": schedules, "env_key": env_key}
+
+
+@app.post("/api/scouts")
+def api_create_scout(req: CreateScoutRequest, _user: str = Depends(require_admin)):
+    env_key = req.env_key
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    sched = create_schedule(
+        env_key=env_key, name=req.name, interval=req.interval,
+        source_ids=req.source_ids, auto_generate=req.auto_generate,
+        auto_run=req.auto_run, auto_approve=req.auto_approve, model=req.model,
+    )
+    return sched
+
+
+@app.put("/api/scouts/{scout_id}")
+def api_update_scout(scout_id: str, req: UpdateScoutRequest, _user: str = Depends(require_admin)):
+    existing = get_schedule(scout_id)
+    if not existing:
+        raise HTTPException(404, "Scout schedule not found")
+    kwargs = {k: v for k, v in req.dict().items() if v is not None}
+    updated = update_schedule(scout_id, **kwargs)
+    return updated
+
+
+@app.delete("/api/scouts/{scout_id}")
+def api_delete_scout(scout_id: str, _user: str = Depends(require_admin)):
+    if not delete_schedule(scout_id):
+        raise HTTPException(404, "Scout schedule not found")
+    return {"ok": True}
+
+
+@app.post("/api/scouts/{scout_id}/trigger")
+async def api_trigger_scout(scout_id: str, _user: str = Depends(require_admin)):
+    sched = get_schedule(scout_id)
+    if not sched:
+        raise HTTPException(404, "Scout schedule not found")
+    result = await asyncio.to_thread(
+        run_scout, sched["env_key"], sched["source_ids"] or None,
+        sched["auto_generate"], sched["auto_run"], sched["auto_approve"],
+        sched.get("model", "sonnet"), sched["id"], "manual",
+    )
+    return result
+
+
+@app.post("/api/scout/run-now")
+async def api_run_scout_now(req: RunScoutNowRequest, _user: str = Depends(require_admin)):
+    env_key = req.env_key
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    result = await asyncio.to_thread(
+        run_scout, env_key, req.source_ids or None,
+        req.auto_generate, req.auto_run, req.auto_approve, req.model,
+    )
+    return result
+
+
+@app.get("/api/scout-runs")
+def api_list_scout_runs(env_key: Optional[str] = None, limit: int = 50):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    runs = list_scout_runs(env_key, limit)
+    return {"runs": runs, "env_key": env_key}
+
+
+# ── Coverage & Analytics ─────────────────────────────────────────
+
+@app.get("/api/coverage/requirements")
+async def api_requirement_coverage(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    result = await asyncio.to_thread(compute_requirement_coverage, env_key)
+    return result
+
+
+@app.get("/api/coverage/mcp-tools")
+async def api_mcp_tool_coverage(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    result = await asyncio.to_thread(compute_mcp_tool_coverage, env_key)
+    return result
+
+
+@app.get("/api/coverage/summary")
+def api_coverage_summary(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    return compute_coverage_summary(env_key)
+
+
+@app.get("/api/reports/env-comparison")
+async def api_env_comparison():
+    result = await asyncio.to_thread(compute_env_comparison)
+    return {"environments": result}
+
+
+@app.get("/api/reports/trending")
+async def api_trending(env_key: Optional[str] = None, days: int = 30):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    result = await asyncio.to_thread(compute_trending, env_key, days)
+    return result
 
 
 # ── Load Test Users ──────────────────────────────────────────────
@@ -2165,6 +2626,401 @@ async def ask_joe(req: AskJoeRequest):
     if not answer:
         answer = "Sorry, I'm having trouble right now. Please try again in a moment."
     return {"answer": answer}
+
+
+# ── Test Management — Folders ────────────────────────────────────
+
+
+class CreateFolderRequest(BaseModel):
+    env_key: Optional[str] = None
+    name: str
+    parent_id: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+
+
+class UpdateFolderRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    parent_id: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+@app.get("/api/test-folders")
+def api_list_folders(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    folders = list_folders(env_key)
+    return {"folders": folders, "env_key": env_key}
+
+
+@app.post("/api/test-folders")
+def api_create_folder(req: CreateFolderRequest, _user: str = Depends(require_admin)):
+    env_key = req.env_key
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    try:
+        folder = create_folder(env_key, req.name, req.parent_id, req.description, req.category)
+        return folder
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/test-folders/{folder_id}")
+def api_update_folder(folder_id: str, req: UpdateFolderRequest, _user: str = Depends(require_admin)):
+    folder = get_folder(folder_id)
+    if not folder:
+        raise HTTPException(404, "Folder not found")
+    kwargs = {k: v for k, v in req.dict().items() if v is not None}
+    updated = update_folder(folder_id, **kwargs)
+    return updated
+
+
+@app.delete("/api/test-folders/{folder_id}")
+def api_delete_folder(folder_id: str, _user: str = Depends(require_admin)):
+    if not delete_folder(folder_id):
+        raise HTTPException(404, "Folder not found")
+    return {"ok": True}
+
+
+# ── Test Management — Suites ────────────────────────────────────
+
+
+class CreateSuiteRequest(BaseModel):
+    env_key: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    suite_type: str = "manual"
+    filter_rule: Optional[str] = None
+    tags: list = []
+
+
+class UpdateSuiteRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    suite_type: Optional[str] = None
+    filter_rule: Optional[str] = None
+    tags: Optional[list] = None
+
+
+class SuiteCasesRequest(BaseModel):
+    case_ids: list
+
+
+@app.get("/api/test-suites")
+def api_list_suites(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    suites = list_suites(env_key)
+    return {"suites": suites, "env_key": env_key}
+
+
+@app.post("/api/test-suites")
+def api_create_suite(req: CreateSuiteRequest, _user: str = Depends(require_admin)):
+    env_key = req.env_key
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    suite = create_suite(env_key, req.name, req.description, req.suite_type, req.filter_rule, req.tags)
+    return suite
+
+
+@app.put("/api/test-suites/{suite_id}")
+def api_update_suite(suite_id: str, req: UpdateSuiteRequest, _user: str = Depends(require_admin)):
+    suite = get_suite(suite_id)
+    if not suite:
+        raise HTTPException(404, "Suite not found")
+    kwargs = {k: v for k, v in req.dict().items() if v is not None}
+    updated = update_suite(suite_id, **kwargs)
+    return updated
+
+
+@app.delete("/api/test-suites/{suite_id}")
+def api_delete_suite(suite_id: str, _user: str = Depends(require_admin)):
+    if not delete_suite(suite_id):
+        raise HTTPException(404, "Suite not found")
+    return {"ok": True}
+
+
+@app.get("/api/test-suites/{suite_id}/cases")
+def api_get_suite_cases(suite_id: str):
+    suite = get_suite(suite_id)
+    if not suite:
+        raise HTTPException(404, "Suite not found")
+    if suite.get("filter_rule"):
+        cases = resolve_smart_suite(suite_id)
+    else:
+        cases = get_suite_cases(suite_id)
+    return {"suite": suite, "cases": cases}
+
+
+@app.post("/api/test-suites/{suite_id}/cases")
+def api_add_suite_cases(suite_id: str, req: SuiteCasesRequest, _user: str = Depends(require_admin)):
+    suite = get_suite(suite_id)
+    if not suite:
+        raise HTTPException(404, "Suite not found")
+    count = add_cases_to_suite(suite_id, req.case_ids)
+    return {"added": count}
+
+
+@app.delete("/api/test-suites/{suite_id}/cases")
+def api_remove_suite_cases(suite_id: str, req: SuiteCasesRequest, _user: str = Depends(require_admin)):
+    count = remove_cases_from_suite(suite_id, req.case_ids)
+    return {"removed": count}
+
+
+@app.post("/api/test-suites/{suite_id}/run")
+async def api_run_suite(suite_id: str, _user: str = Depends(require_admin)):
+    """Run all approved cases in a suite as a match."""
+    suite = get_suite(suite_id)
+    if not suite:
+        raise HTTPException(404, "Suite not found")
+
+    active_matches = db.count_active_matches()
+    if active_matches >= MAX_CONCURRENT_MATCHES:
+        raise HTTPException(429, f"Max concurrent matches ({MAX_CONCURRENT_MATCHES}) reached.")
+
+    if suite.get("filter_rule"):
+        cases = resolve_smart_suite(suite_id)
+    else:
+        cases = get_suite_cases(suite_id)
+    # Only run approved cases
+    cases = [c for c in cases if c["status"] == "approved"]
+    if not cases:
+        raise HTTPException(400, "No approved cases in this suite")
+
+    match_id = str(uuid.uuid4())[:8]
+    env_config = load_env_config()
+    active_env_key = env_config.get("active", "production")
+    active_env = env_config.get("environments", {}).get(active_env_key, {})
+    env_info = {
+        "base_url": active_env.get("base_url", ""),
+        "platform_url": active_env.get("platform_url", ""),
+        "project_id": active_env.get("project_id", ""),
+        "project_name": active_env.get("project_name", ""),
+        "org_id": active_env.get("org_id", ""),
+        "account_name": active_env.get("account_name", ""),
+        "joe_model": "sonnet",
+    }
+
+    db.create_match(
+        match_id=match_id,
+        name=f"Suite: {suite['name']}",
+        category="test_config",
+        scenario_count=len(cases),
+        max_time_s=600,
+        eval_model="sonnet",
+        env_key=active_env_key,
+    )
+
+    session_ids = []
+    case_map = {}  # session_id → case
+    for tc in cases:
+        sid = str(uuid.uuid4())[:8]
+        session_ids.append(sid)
+        case_map[sid] = tc
+        mode = tc["mode"] if tc["mode"] in ("fixed", "hybrid", "explore") else "fixed"
+        goal = tc.get("goal") or tc.get("description") or tc["name"]
+        max_turns = len(tc["steps"]) if mode == "fixed" and tc["steps"] else tc.get("max_turns", 10)
+
+        # For fixed mode, register as a temporary custom scenario
+        if mode == "fixed" and tc["steps"]:
+            scenario_id = f"tc-{tc['id']}"
+            with db.get_conn() as _conn:
+                _conn.execute(
+                    """INSERT OR REPLACE INTO custom_scenarios (id, name, description, category, steps, tags)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (scenario_id, tc["name"], tc.get("description", tc["name"]),
+                     tc.get("category", "test_config"),
+                     json.dumps(tc["steps"]), json.dumps(tc.get("tags", []))),
+                )
+        else:
+            scenario_id = None
+
+        db.create_session(
+            session_id=sid,
+            actor_mode=mode,
+            goal=goal,
+            scenario_id=scenario_id,
+            max_turns=max_turns,
+            max_time_s=600,
+            match_id=match_id,
+            env_key=active_env_key,
+            env_info=env_info,
+        )
+        # Link session to case_id
+        with db.get_conn() as _conn:
+            _conn.execute("UPDATE sessions SET case_id = ? WHERE id = ?", (tc["id"], sid))
+
+    async def run_suite_match():
+        async with _match_semaphore:
+            db.update_match(match_id, status="running", started_at=datetime.now().isoformat())
+            await manager.broadcast(match_id, {"type": "match_started", "match_id": match_id})
+
+            match_sem = asyncio.Semaphore(MAX_ROUNDS_PER_MATCH)
+
+            async def run_one(sid, tc):
+                async with match_sem:
+                    mode = tc["mode"] if tc["mode"] in ("fixed", "hybrid", "explore") else "fixed"
+
+                    async def on_turn(s, data):
+                        data["match_id"] = match_id
+                        await manager.broadcast(s, data)
+                        await manager.broadcast(match_id, data)
+
+                    async def on_complete(s, data):
+                        data["match_id"] = match_id
+                        await manager.broadcast(s, data)
+                        await manager.broadcast(match_id, data)
+                        # Record execution history
+                        try:
+                            score = data.get("overall_score")
+                            record_case_run(tc["id"], s, match_id, score, (score or 0) >= 3.0)
+                            aggregate_session_tool_calls(s, tc["id"])
+                            # Update test case stats
+                            from test_generator import update_test_case as _update_tc
+                            _update_tc(tc["id"],
+                                       last_run_at=datetime.utcnow().isoformat(),
+                                       last_run_score=score,
+                                       run_count=(tc.get("run_count", 0) or 0) + 1)
+                        except Exception as e:
+                            logger.warning(f"Failed to record case run for {tc['id']}: {e}")
+
+                    async def on_error(s, error):
+                        await manager.broadcast(s, {"type": "error", "session_id": s, "error": error})
+                        await manager.broadcast(match_id, {"type": "session_error", "session_id": s, "error": error})
+
+                    try:
+                        goal = tc.get("goal") or tc.get("description") or tc["name"]
+                        scenario_id = f"tc-{tc['id']}" if mode == "fixed" else None
+                        max_turns = len(tc["steps"]) if mode == "fixed" and tc["steps"] else tc.get("max_turns", 10)
+                        await run_session(
+                            session_id=sid,
+                            actor_mode=mode,
+                            goal=goal,
+                            scenario_id=scenario_id,
+                            max_turns=max_turns,
+                            max_time_s=600,
+                            eval_model="sonnet",
+                            on_turn=on_turn,
+                            on_complete=on_complete,
+                            on_error=on_error,
+                        )
+                    except Exception as e:
+                        logger.exception(f"Suite match {match_id} session {sid} failed: {e}")
+
+            await asyncio.gather(*(run_one(sid, case_map[sid]) for sid in session_ids))
+            await _evaluate_match(match_id)
+
+    asyncio.create_task(run_suite_match())
+    return {
+        "match_id": match_id,
+        "session_ids": session_ids,
+        "case_count": len(cases),
+        "status": "started",
+    }
+
+
+# ── Test Management — Manual Case Creation ──────────────────────
+
+
+class CreateTestCaseRequest(BaseModel):
+    env_key: Optional[str] = None
+    name: str
+    mode: str = "fixed"
+    description: Optional[str] = None
+    priority: str = "medium"
+    category: str = "general"
+    folder_id: Optional[str] = None
+    steps: list = []
+    goal: Optional[str] = None
+    max_turns: int = 10
+    tags: list = []
+    source_items: list = []
+    mcp_tools_tested: list = []
+    depends_on: list = []
+    parameters: list = []
+    template: bool = False
+
+
+class BulkMoveRequest(BaseModel):
+    case_ids: list
+    folder_id: Optional[str] = None
+
+
+class CreateFromTemplateRequest(BaseModel):
+    template_id: str
+    env_key: Optional[str] = None
+    folder_id: Optional[str] = None
+    overrides: Optional[dict] = None
+
+
+@app.post("/api/test-cases")
+def api_create_test_case(req: CreateTestCaseRequest, _user: str = Depends(require_admin)):
+    env_key = req.env_key
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    case = create_manual_test_case(
+        env_key=env_key, name=req.name, mode=req.mode,
+        description=req.description, priority=req.priority,
+        category=req.category, folder_id=req.folder_id,
+        steps=req.steps, goal=req.goal, max_turns=req.max_turns,
+        tags=req.tags, source_items=req.source_items,
+        mcp_tools_tested=req.mcp_tools_tested,
+        depends_on=req.depends_on, parameters=req.parameters,
+        template=req.template,
+    )
+    return case
+
+
+@app.post("/api/test-cases/bulk-move")
+def api_bulk_move_cases(req: BulkMoveRequest, _user: str = Depends(require_admin)):
+    try:
+        count = bulk_move_cases(req.case_ids, req.folder_id)
+        return {"moved": count}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/test-cases/from-template")
+def api_create_from_template(req: CreateFromTemplateRequest, _user: str = Depends(require_admin)):
+    env_key = req.env_key
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    try:
+        case = create_from_template(req.template_id, env_key, req.folder_id, req.overrides)
+        return case
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/test-cases/{case_id}/history")
+def api_get_case_history(case_id: str, limit: int = 20):
+    history = get_case_run_history(case_id, limit)
+    return {"history": history}
+
+
+@app.post("/api/test-management/import-builtins")
+def api_import_builtins(folder_id: Optional[str] = None, _user: str = Depends(require_admin)):
+    env_config = load_env_config()
+    env_key = env_config.get("active", "production")
+    imported = import_builtin_scenarios(env_key, folder_id)
+    return {"imported": imported, "count": len(imported)}
+
+
+@app.get("/api/coverage/actual-tools")
+def api_actual_tool_coverage(env_key: Optional[str] = None):
+    if not env_key:
+        env_config = load_env_config()
+        env_key = env_config.get("active", "production")
+    actual = get_actual_tool_coverage(env_key)
+    return {"tools": actual, "env_key": env_key}
 
 
 # ── Serve React build (production) ───────────────────────────────

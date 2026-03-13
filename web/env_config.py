@@ -122,6 +122,14 @@ def init_env_db():
             conn.execute(
                 "UPDATE env_profiles SET license_source_id = '49', license_feature = 'TESTOPS_G3_FULL' WHERE key = 'staging'"
             )
+        # Migrate: add MCP URL columns
+        try:
+            conn.execute("SELECT mcp_public_url FROM env_profiles LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE env_profiles ADD COLUMN mcp_public_url TEXT DEFAULT ''")
+            conn.execute("ALTER TABLE env_profiles ADD COLUMN mcp_protected_url TEXT DEFAULT ''")
+            conn.execute("UPDATE env_profiles SET mcp_public_url = 'https://mcp.katalon.com/mcp', mcp_protected_url = 'https://platform.katalon.io/mcp' WHERE key = 'production'")
+            conn.execute("UPDATE env_profiles SET mcp_public_url = 'https://mcp.staging.katalon.com/mcp', mcp_protected_url = 'https://platform.staging.katalon.com/mcp' WHERE key = 'staging'")
 
 
 def _seed_defaults(conn):
@@ -183,6 +191,8 @@ def _row_to_dict(row) -> dict:
         "account_name": row["account_name"] or "",
         "license_source_id": row["license_source_id"] if "license_source_id" in row.keys() else "",
         "license_feature": row["license_feature"] if "license_feature" in row.keys() else "",
+        "mcp_public_url": row["mcp_public_url"] if "mcp_public_url" in row.keys() else "",
+        "mcp_protected_url": row["mcp_protected_url"] if "mcp_protected_url" in row.keys() else "",
         "credentials": {
             "email": row["cred_email"] or "",
             "password": row["cred_password"] or "",
@@ -243,7 +253,8 @@ def save_env_config(config: dict) -> dict:
                         name=?, base_url=?, login_url=?, platform_url=?,
                         project_id=?, project_name=?, org_id=?, account_id=?,
                         account_name=?, cred_email=?, cred_password=?, cred_account=?,
-                        license_source_id=?, license_feature=?
+                        license_source_id=?, license_feature=?,
+                        mcp_public_url=?, mcp_protected_url=?
                     WHERE key = ?
                 """, (
                     env.get("name", key), env.get("base_url", ""),
@@ -254,6 +265,7 @@ def save_env_config(config: dict) -> dict:
                     creds.get("email", ""), creds.get("password", ""),
                     creds.get("account", ""),
                     env.get("license_source_id", ""), env.get("license_feature", ""),
+                    env.get("mcp_public_url", ""), env.get("mcp_protected_url", ""),
                     key,
                 ))
             else:
@@ -261,8 +273,9 @@ def save_env_config(config: dict) -> dict:
                 conn.execute("""
                     INSERT INTO env_profiles
                     (key, name, base_url, login_url, platform_url, project_id, project_name,
-                     org_id, account_id, account_name, cred_email, cred_password, cred_account, is_active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                     org_id, account_id, account_name, cred_email, cred_password, cred_account,
+                     mcp_public_url, mcp_protected_url, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                 """, (
                     key, env.get("name", key), env.get("base_url", ""),
                     env.get("login_url", ""), env.get("platform_url", ""),
@@ -271,6 +284,7 @@ def save_env_config(config: dict) -> dict:
                     env.get("account_name", ""),
                     creds.get("email", ""), creds.get("password", ""),
                     creds.get("account", ""),
+                    env.get("mcp_public_url", ""), env.get("mcp_protected_url", ""),
                 ))
 
     return load_env_config()

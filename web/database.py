@@ -469,7 +469,8 @@ def insert_turn(session_id: str, turn_number: int, user_message: str,
             (session_id, turn_number, user_message, assistant_response, status,
              ttfb_ms, total_ms, poll_count, json.dumps(tool_calls or []), error,
              eval_relevance, eval_accuracy, eval_helpfulness, eval_tool_usage,
-             eval_latency, datetime.now().isoformat()),
+             json.dumps(eval_latency) if isinstance(eval_latency, dict) else eval_latency,
+             datetime.now().isoformat()),
         )
     return get_turns(session_id, turn_number)
 
@@ -487,7 +488,8 @@ def update_turn_response(session_id: str, turn_number: int,
                tool_calls = ?, error = ?, eval_latency = ?
                WHERE session_id = ? AND turn_number = ?""",
             (assistant_response, status, ttfb_ms, total_ms, poll_count,
-             json.dumps(tool_calls or []), error, eval_latency,
+             json.dumps(tool_calls or []), error,
+             json.dumps(eval_latency) if isinstance(eval_latency, dict) else eval_latency,
              session_id, turn_number),
         )
 
@@ -525,6 +527,11 @@ def _parse_turn(row) -> dict:
     d = dict(row)
     if isinstance(d.get("tool_calls"), str):
         d["tool_calls"] = json.loads(d["tool_calls"])
+    if isinstance(d.get("eval_latency"), str):
+        try:
+            d["eval_latency"] = json.loads(d["eval_latency"])
+        except (json.JSONDecodeError, TypeError):
+            pass
     return d
 
 

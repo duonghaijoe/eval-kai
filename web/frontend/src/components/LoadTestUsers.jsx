@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { Users, Plus, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, XCircle, UserMinus } from 'lucide-react'
-import { listLoadTestUsers, syncLoadTestUsers, provisionLoadTestUsers, getProvisionStatus, teardownLoadTestUsers, deleteLoadTestUserRecord, getEnvConfig } from '../api'
+import { Users, Plus, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, XCircle, UserMinus, Settings, ExternalLink, ChevronDown, ChevronRight, Copy, Eye, EyeOff } from 'lucide-react'
+import { listLoadTestUsers, syncLoadTestUsers, provisionLoadTestUsers, getProvisionStatus, teardownLoadTestUsers, deleteLoadTestUserRecord, getEnvConfig, discoverLicenseSources } from '../api'
 import { useAdmin } from '../AdminContext'
 import { formatDt } from '../api'
 
@@ -25,6 +25,45 @@ function StatusBadge({ status, fighting }) {
   )
 }
 
+function DetailField({ label, value, copyable, secret, error, showPasswords, setShowPasswords, fieldKey }) {
+  const displayValue = value == null || value === '' ? '-' : String(value)
+  const isHidden = secret && !showPasswords?.[fieldKey]
+  const maskedValue = isHidden ? '••••••••' : displayValue
+
+  const handleCopy = (e) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(displayValue)
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem', minWidth: 0 }}>
+      <span style={{ color: 'var(--text-muted)', flexShrink: 0, fontSize: '0.68rem' }}>{label}:</span>
+      <span style={{
+        fontFamily: copyable || secret ? 'monospace' : 'inherit',
+        color: error ? 'var(--red)' : 'var(--text-primary)',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        maxWidth: secret ? '200px' : '300px',
+      }}>
+        {maskedValue}
+      </span>
+      {secret && displayValue !== '-' && (
+        <button onClick={(e) => { e.stopPropagation(); setShowPasswords(p => ({ ...p, [fieldKey]: !p[fieldKey] })) }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 0.15rem', color: 'var(--text-muted)', display: 'inline-flex' }}
+          title={isHidden ? 'Show' : 'Hide'}>
+          {isHidden ? <Eye size={11} /> : <EyeOff size={11} />}
+        </button>
+      )}
+      {(copyable || secret) && displayValue !== '-' && (
+        <button onClick={handleCopy}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 0.15rem', color: 'var(--text-muted)', display: 'inline-flex' }}
+          title="Copy">
+          <Copy size={11} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 export default function LoadTestUsers() {
   const { admin } = useAdmin()
   const [users, setUsers] = useState([])
@@ -45,18 +84,51 @@ export default function LoadTestUsers() {
 
   const pollRef = useRef(null)
 
-  // Load env options
-  useEffect(() => {
-    getEnvConfig().then(cfg => {
+  const [expandedUser, setExpandedUser] = useState(null)
+  const [showPasswords, setShowPasswords] = useState({})
+  const [envConfigs, setEnvConfigs] = useState({})
+  const [licenseQuota, setLicenseQuota] = useState(null)
+  const [loadingLicense, setLoadingLicense] = useState(false)
+  const [envConfigVersion, setEnvConfigVersion] = useState(0)
+
+  const refreshEnvConfig = () => {
+    return getEnvConfig().then(cfg => {
       const envs = cfg.environments || {}
       setEnvOptions(Object.entries(envs).map(([k, v]) => ({ key: k, name: v.name })))
-      setEnvKey(cfg.active || 'production')
+      setEnvConfigs(envs)
+      if (!envKey) setEnvKey(cfg.active || 'production')
+      setEnvConfigVersion(v => v + 1)
     }).catch(() => {})
-  }, [])
+  }
 
-  // Load users when envKey changes — sync from platform to catch externally-provisioned users
+  // Load env options on mount
+  useEffect(() => { refreshEnvConfig() }, [])
+
+  // Re-fetch env config + license quota when envKey changes
   useEffect(() => {
-    if (envKey) loadUsers(true)
+    if (!envKey) return
+    refreshEnvConfig()
+  }, [envKey])
+
+  // Fetch license quota when env config updates
+  useEffect(() => {
+    if (!envKey || !envConfigVersion) return
+    const ec = envConfigs[envKey]
+    if (!ec?.license_source_id) { setLicenseQuota(null); return }
+    setLoadingLicense(true)
+    discoverLicenseSources({ env_key: envKey })
+      .then(result => {
+        const sources = result.sources || []
+        const match = sources.find(s => String(s.id) === String(ec.license_source_id))
+        setLicenseQuota(match || null)
+      })
+      .catch(() => setLicenseQuota(null))
+      .finally(() => setLoadingLicense(false))
+  }, [envConfigVersion])
+
+  // Load users when envKey changes — no sync on auto-load (sync only on explicit Refresh)
+  useEffect(() => {
+    if (envKey) loadUsers(false)
   }, [envKey])
 
   const loadUsers = async (sync = false) => {
@@ -169,7 +241,7 @@ export default function LoadTestUsers() {
             style={{ padding: '0.35rem 0.5rem', fontSize: '0.78rem', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
             {envOptions.map(e => <option key={e.key} value={e.key}>{e.name}</option>)}
           </select>
-          <button onClick={() => loadUsers(true)} className="secondary" disabled={loading}>
+          <button onClick={() => { refreshEnvConfig(); loadUsers(true) }} className="secondary" disabled={loading}>
             <RefreshCw size={13} className={loading ? 'spinning' : ''} /> Refresh
           </button>
         </div>
@@ -180,6 +252,93 @@ export default function LoadTestUsers() {
           <AlertCircle size={14} /> {error}
         </div>
       )}
+
+      {/* Env config summary */}
+      {envKey && envConfigs[envKey] && (() => {
+        const ec = envConfigs[envKey]
+        const creds = ec.credentials || {}
+        const hasLicense = !!ec.license_source_id
+        const hasProject = !!ec.project_id
+        const hasAccount = !!creds.account
+        const allGood = hasLicense && hasProject && hasAccount
+        return (
+          <div className="card" style={{ padding: '0.6rem 0.85rem', marginBottom: '1rem', fontSize: '0.72rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600, fontSize: '0.74rem' }}>
+                <Settings size={12} style={{ color: 'var(--text-muted)' }} />
+                Environment Config
+                {allGood
+                  ? <CheckCircle size={11} style={{ color: 'var(--green)' }} />
+                  : <AlertCircle size={11} style={{ color: 'var(--yellow)' }} />
+                }
+              </div>
+              <a href={`/settings?env=${envKey}`} style={{ fontSize: '0.65rem', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '0.2rem', textDecoration: 'none' }}>
+                <ExternalLink size={10} /> Edit
+              </a>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.3rem 1rem', color: 'var(--text-secondary)' }}>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>Account: </span>
+                {ec.account_name || '-'}
+                <span style={{ color: 'var(--text-muted)', marginLeft: '0.3rem' }}>
+                  ({hasAccount ? `#${creds.account.split('_')[0]}` : <span style={{ color: 'var(--red)' }}>not set</span>})
+                </span>
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>Domain: </span>
+                {ec.base_url || ec.platform_url || <span style={{ color: 'var(--red)' }}>not set</span>}
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>Project: </span>
+                {ec.project_name || '-'}
+                <span style={{ color: 'var(--text-muted)', marginLeft: '0.3rem' }}>
+                  ({hasProject ? `#${ec.project_id}` : <span style={{ color: 'var(--red)' }}>not set</span>})
+                </span>
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>Org: </span>
+                {ec.org_id || <span style={{ color: 'var(--red)' }}>not set</span>}
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>License Source: </span>
+                {hasLicense
+                  ? <>
+                      <span style={{ fontFamily: 'monospace' }}>#{ec.license_source_id}</span>
+                      <span style={{ color: 'var(--text-muted)', marginLeft: '0.3rem' }}>({ec.license_feature || 'N/A'})</span>
+                      {loadingLicense && <span style={{ color: 'var(--text-muted)', marginLeft: '0.4rem' }}>checking...</span>}
+                      {!loadingLicense && licenseQuota && (
+                        <span style={{ marginLeft: '0.4rem' }}>
+                          — <span style={{
+                            fontWeight: 700,
+                            color: licenseQuota.available <= 0 ? 'var(--red)' : licenseQuota.available < 5 ? 'var(--yellow)' : 'var(--green)'
+                          }}>
+                            {licenseQuota.available}
+                          </span>
+                          <span style={{ color: 'var(--text-muted)' }}>/{licenseQuota.purchased} available</span>
+                          <span style={{ color: 'var(--text-muted)', marginLeft: '0.3rem' }}>(pool: {licenseQuota.pool}, assigned: {licenseQuota.assigned})</span>
+                        </span>
+                      )}
+                      {!loadingLicense && !licenseQuota && hasLicense && (
+                        <span style={{ color: 'var(--red)', marginLeft: '0.4rem' }}>— source #{ec.license_source_id} not found for this account. Check Account ID &amp; License Source in Settings.</span>
+                      )}
+                    </>
+                  : <span style={{ color: 'var(--red)' }}>not set — Discover in Settings</span>
+                }
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>Admin: </span>
+                {creds.email || <span style={{ color: 'var(--red)' }}>not set</span>}
+              </div>
+            </div>
+            {!allGood && (
+              <div style={{ marginTop: '0.35rem', fontSize: '0.66rem', color: 'var(--yellow)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                <AlertCircle size={10} />
+                Missing config — scouting may fail. <a href={`/settings?env=${envKey}`} style={{ color: 'var(--accent)' }}>Configure environment</a>
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
@@ -279,44 +438,85 @@ export default function LoadTestUsers() {
                 <span className="spinner" style={{ width: 14, height: 14 }} /> Loading...
               </td></tr>
             )}
-            {users.map(u => (
-              <tr key={u.email} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '0.5rem 0.75rem', fontFamily: 'monospace', fontSize: '0.72rem' }}>{u.email}</td>
-                <td style={{ padding: '0.5rem 0.75rem' }}><StatusBadge status={u.status} fighting={u.fighting} /></td>
-                <td style={{ padding: '0.5rem 0.75rem', fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                  {u.user_id || '-'}
-                </td>
-                <td style={{ padding: '0.5rem 0.75rem', fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                  {u.account_user_id || '-'}
-                </td>
-                <td style={{ padding: '0.5rem 0.75rem', fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                  {u.license_allocation_id || '-'}
-                </td>
-                <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                  {formatDt(u.created_at)}
-                </td>
-                {admin && (
-                  <td style={{ padding: '0.5rem 0.75rem' }}>
-                    <div style={{ display: 'flex', gap: '0.3rem' }}>
-                      {u.status === 'active' && (
-                        <button onClick={() => handleTeardownOne(u.email)}
-                          title="Teardown" className="icon-btn"
-                          style={{ padding: '0.2rem', color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer' }}>
-                          <UserMinus size={13} />
-                        </button>
-                      )}
-                      {u.status === 'error' && (
-                        <button onClick={() => handleDeleteRecord(u.email)}
-                          title="Delete record" className="icon-btn"
-                          style={{ padding: '0.2rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
-                          <Trash2 size={13} />
-                        </button>
+            {users.map(u => {
+              const isExpanded = expandedUser === u.email
+              return (
+                <tr key={u.email} style={{ borderBottom: isExpanded ? 'none' : '1px solid var(--border)' }}>
+                  <td colSpan={admin ? 7 : 6} style={{ padding: 0 }}>
+                    {/* Main row */}
+                    <div
+                      onClick={() => setExpandedUser(isExpanded ? null : u.email)}
+                      style={{ display: 'grid', gridTemplateColumns: admin ? '2fr 0.8fr 0.8fr 0.8fr 0.8fr 1fr 0.6fr' : '2fr 0.8fr 0.8fr 0.8fr 0.8fr 1fr', alignItems: 'center', cursor: 'pointer', padding: '0.5rem 0.75rem', transition: 'background 0.15s', background: isExpanded ? 'var(--bg-primary)' : 'transparent' }}
+                      onMouseEnter={e => { if (!isExpanded) e.currentTarget.style.background = 'var(--bg-hover)' }}
+                      onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = 'transparent' }}
+                    >
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        {isExpanded ? <ChevronDown size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} /> : <ChevronRight size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />}
+                        {u.email}
+                      </div>
+                      <div><StatusBadge status={u.status} fighting={u.fighting} /></div>
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{u.user_id || '-'}</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{u.account_user_id || '-'}</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{u.license_allocation_id || '-'}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{formatDt(u.created_at)}</div>
+                      {admin && (
+                        <div style={{ display: 'flex', gap: '0.3rem' }} onClick={e => e.stopPropagation()}>
+                          {u.status === 'active' && (
+                            <button onClick={() => handleTeardownOne(u.email)}
+                              title="Teardown" className="icon-btn"
+                              style={{ padding: '0.2rem', color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                              <UserMinus size={13} />
+                            </button>
+                          )}
+                          {u.status === 'error' && (
+                            <button onClick={() => handleDeleteRecord(u.email)}
+                              title="Delete record" className="icon-btn"
+                              style={{ padding: '0.2rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
+
+                    {/* Expanded detail panel */}
+                    {isExpanded && (
+                      <div style={{ padding: '0.5rem 0.75rem 0.75rem 2rem', background: 'var(--bg-primary)', borderBottom: '1px solid var(--border)', fontSize: '0.72rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '0.4rem 1.5rem' }}>
+                          {/* Credentials */}
+                          <DetailField label="Email" value={u.email} copyable />
+                          <DetailField label="Password" value={u.password} secret showPasswords={showPasswords} setShowPasswords={setShowPasswords} fieldKey={u.email} />
+
+                          {/* IDs */}
+                          <DetailField label="Keycloak User ID" value={u.user_id} copyable />
+                          <DetailField label="TestOps User ID" value={u.testops_user_id} copyable />
+                          <DetailField label="Account User ID" value={u.account_user_id} copyable />
+                          <DetailField label="Project User ID" value={u.project_user_id} copyable />
+                          <DetailField label="License Allocation ID" value={u.license_allocation_id} copyable />
+
+                          {/* Token */}
+                          {u.bearer_token && (
+                            <DetailField label="Bearer Token" value={u.bearer_token} secret showPasswords={showPasswords} setShowPasswords={setShowPasswords} fieldKey={`${u.email}_token`} />
+                          )}
+                          {u.token_expires_at && (
+                            <DetailField label="Token Expires" value={formatDt(u.token_expires_at)} />
+                          )}
+
+                          {/* Meta */}
+                          <DetailField label="Created" value={formatDt(u.created_at)} />
+                          <DetailField label="Updated" value={formatDt(u.updated_at)} />
+                          {u.error && (
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <DetailField label="Error" value={u.error} error />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </td>
-                )}
-              </tr>
-            ))}
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Flame, Compass, GitMerge, FileCheck, Zap, ChevronRight, PlayCircle, Layers, Save, CheckCircle, Plus, Trash2, Send, MessageSquare, BookOpen } from 'lucide-react'
-import { startSession, getScenarios, getConfig, createMatch, updateConfig, submitScenario } from '../api'
+import { Flame, Compass, GitMerge, FileCheck, Zap, ChevronRight, PlayCircle, Layers, Save, CheckCircle, Plus, Trash2, Send, MessageSquare, BookOpen, Package, Play } from 'lucide-react'
+import { startSession, getScenarios, getConfig, createMatch, updateConfig, submitScenario, listTestSuites, getSuiteCases, runSuite } from '../api'
 import { useAdmin } from '../AdminContext'
 
 const MODES = [
@@ -9,6 +9,7 @@ const MODES = [
   { id: 'explore', label: 'Explore', desc: 'AI decides each exchange dynamically', icon: Compass, color: 'var(--katalon-teal)' },
   { id: 'hybrid', label: 'Hybrid', desc: 'AI-generated plan, adapted per exchange', icon: GitMerge, color: 'var(--orange)' },
   { id: 'fixed', label: 'Fixed', desc: 'Predefined scenarios for regression', icon: FileCheck, color: 'var(--green)' },
+  { id: 'test_config', label: 'Test Config', desc: 'Run a suite of mixed-mode test cases', icon: Package, color: 'var(--blue)' },
 ]
 
 export default function SessionLauncher() {
@@ -25,6 +26,11 @@ export default function SessionLauncher() {
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  // Test Config state
+  const [suiteList, setSuiteList] = useState([])
+  const [selectedSuiteId, setSelectedSuiteId] = useState('')
+  const [suiteCases, setSuiteCases] = useState([])
+  const [loadingSuite, setLoadingSuite] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -35,6 +41,34 @@ export default function SessionLauncher() {
       if (d.default_max_time) setMaxTime(d.default_max_time)
     }).catch(() => {})
   }, [])
+
+  // Load suites when test_config mode is selected
+  useEffect(() => {
+    if (mode === 'test_config') {
+      listTestSuites().then(d => setSuiteList(d.suites || [])).catch(() => {})
+    }
+  }, [mode])
+
+  // Load suite cases when a suite is selected
+  useEffect(() => {
+    if (!selectedSuiteId) { setSuiteCases([]); return }
+    setLoadingSuite(true)
+    getSuiteCases(selectedSuiteId).then(d => setSuiteCases(d.cases || [])).catch(() => setSuiteCases([])).finally(() => setLoadingSuite(false))
+  }, [selectedSuiteId])
+
+  const handleRunSuite = async () => {
+    if (!selectedSuiteId) return
+    setError(null)
+    setLoading(true)
+    try {
+      const res = await runSuite(selectedSuiteId)
+      navigate(`/matches/${res.match_id}`)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleSaveDefaults = async () => {
     setSaving(true)
@@ -283,6 +317,88 @@ export default function SessionLauncher() {
           </div>
         )}
 
+        {mode === 'test_config' && (
+          <div className="card">
+            <h3><Package size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Test Suite Configuration</h3>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.6rem' }}>
+              Select a test suite to run. Each case runs in its own mode (fixed/hybrid/explore) as a separate round within one match.
+            </p>
+
+            <select value={selectedSuiteId} onChange={e => setSelectedSuiteId(e.target.value)} style={{ marginBottom: '0.6rem', width: '100%' }}>
+              <option value="">Select a test suite...</option>
+              {suiteList.map(s => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.case_count || 0} cases) {s.suite_type === 'smart' ? '(Smart)' : ''}
+                </option>
+              ))}
+            </select>
+
+            {loadingSuite && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}><span className="spinner" style={{ width: 10, height: 10 }} /> Loading cases...</div>}
+
+            {suiteCases.length > 0 && (
+              <>
+                {/* Mode breakdown */}
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                  {Object.entries(suiteCases.reduce((acc, c) => { acc[c.mode] = (acc[c.mode] || 0) + 1; return acc }, {})).map(([m, n]) => (
+                    <span key={m} style={{
+                      fontSize: '0.68rem', padding: '0.15em 0.5em', borderRadius: '10px',
+                      background: m === 'fixed' ? '#dcfce7' : m === 'hybrid' ? '#fff7ed' : m === 'explore' ? '#e0e7ff' : '#fee2e2',
+                      color: m === 'fixed' ? 'var(--green)' : m === 'hybrid' ? 'var(--orange)' : m === 'explore' ? 'var(--accent)' : 'var(--red)',
+                      fontWeight: 500,
+                    }}>
+                      {n} {m}
+                    </span>
+                  ))}
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', padding: '0.15em 0' }}>{suiteCases.length} total rounds</span>
+                </div>
+
+                {/* Case preview table */}
+                <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid var(--border)', borderRadius: '6px' }}>
+                  <table style={{ width: '100%', fontSize: '0.72rem', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-primary)', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0 }}>
+                        <th style={{ textAlign: 'left', padding: '0.3rem 0.5rem', fontWeight: 600 }}>Case</th>
+                        <th style={{ textAlign: 'center', padding: '0.3rem', fontWeight: 600, width: 55 }}>Mode</th>
+                        <th style={{ textAlign: 'center', padding: '0.3rem', fontWeight: 600, width: 55 }}>Priority</th>
+                        <th style={{ textAlign: 'center', padding: '0.3rem', fontWeight: 600, width: 50 }}>Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {suiteCases.map(tc => (
+                        <tr key={tc.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <td style={{ padding: '0.25rem 0.5rem' }}>
+                            <span style={{ fontWeight: 500 }}>{tc.name}</span>
+                            {tc.category && tc.category !== 'general' && <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginLeft: '0.3rem' }}>{tc.category}</span>}
+                          </td>
+                          <td style={{ textAlign: 'center', padding: '0.25rem' }}>
+                            <span style={{
+                              fontSize: '0.62rem', padding: '0.1em 0.4em', borderRadius: '8px',
+                              background: tc.mode === 'fixed' ? '#dcfce7' : tc.mode === 'hybrid' ? '#fff7ed' : '#e0e7ff',
+                              color: tc.mode === 'fixed' ? 'var(--green)' : tc.mode === 'hybrid' ? 'var(--orange)' : 'var(--accent)',
+                            }}>{tc.mode}</span>
+                          </td>
+                          <td style={{ textAlign: 'center', padding: '0.25rem', fontSize: '0.65rem', color: tc.priority === 'high' ? 'var(--red)' : tc.priority === 'medium' ? 'var(--yellow)' : 'var(--text-muted)' }}>
+                            {tc.priority}
+                          </td>
+                          <td style={{ textAlign: 'center', padding: '0.25rem', fontSize: '0.68rem' }}>
+                            {tc.last_run_score != null ? tc.last_run_score.toFixed(1) : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+
+            {selectedSuiteId && !loadingSuite && suiteCases.length === 0 && (
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '1rem 0', textAlign: 'center' }}>
+                No cases in this suite. Add cases from the Test Manager.
+              </div>
+            )}
+          </div>
+        )}
+
         {mode === 'fixed' && (
           <div className="card">
             <h3><FileCheck size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Scenarios</h3>
@@ -465,7 +581,7 @@ export default function SessionLauncher() {
             )}
           </div>
           <div className="form-row" style={{ marginTop: '0.75rem' }}>
-            {mode !== 'fixed' && (
+            {mode !== 'fixed' && mode !== 'test_config' && (
               <div>
                 <label>Max Exchanges</label>
                 <input type="number" value={maxTurns} onChange={e => setMaxTurns(+e.target.value)} min={1} max={50} />
@@ -491,7 +607,12 @@ export default function SessionLauncher() {
         )}
 
         <div className="form-actions">
-          {mode === 'fixed' ? (
+          {mode === 'test_config' ? (
+            <button type="button" className="primary" onClick={handleRunSuite} disabled={loading || !selectedSuiteId || suiteCases.length === 0}
+              style={{ background: 'var(--blue)', borderColor: 'var(--blue)' }}>
+              {loading ? <><span className="spinner" /> Starting...</> : <><Play size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Run Suite — {suiteCases.length} rounds</>}
+            </button>
+          ) : mode === 'fixed' ? (
             <>
               <button type="submit" className="primary" disabled={loading || !scenarioId}>
                 {loading ? <><span className="spinner" /> Starting...</> : <><PlayCircle size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />Run Single Round</>}

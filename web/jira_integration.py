@@ -829,17 +829,36 @@ def log_bug_for_session(session_id: str, force: bool = False) -> dict:
         client.close()
 
 
+def _is_internal_error(session: dict) -> bool:
+    """Check if the session's stop_reason indicates a Test Kai internal error (not a Kai agent bug)."""
+    stop = (session.get("stop_reason") or "").lower()
+    internal_patterns = [
+        "error binding parameter",
+        "sqlite", "database", "type 'dict'",
+        "attributeerror", "typeerror", "keyerror",
+        "cannot reach login service",
+        "admin login failed",
+    ]
+    return any(p in stop for p in internal_patterns)
+
+
 def _build_session_summary(session: dict, turns: list, goal: str, eval_data: dict = None) -> str:
     """Generate summary for a session-level ticket."""
+    # Distinguish internal Test Kai errors from Kai agent bugs
+    prefix = "[TESTKAI-BUG]" if _is_internal_error(session) else "[KAI-BUG]"
+
     overall = eval_data.get("overall_score") if eval_data else None
     error_turns = [t for t in turns if t.get("error") or t.get("status") == "error"]
     total = len(turns)
 
+    if _is_internal_error(session):
+        stop = (session.get("stop_reason") or "unknown")[:80]
+        return f"{prefix} Internal error: {stop}"
     if error_turns:
-        return f"[KAI-BUG] {len(error_turns)}/{total} exchanges errored — \"{(goal or 'test session')[:60]}\""
+        return f"{prefix} {len(error_turns)}/{total} exchanges errored — \"{(goal or 'test session')[:60]}\""
     if overall is not None and overall < 3:
-        return f"[KAI-BUG] Low quality ({overall}/5) — \"{(goal or 'test session')[:60]}\""
-    return f"[KAI-BUG] Issue in session — \"{(goal or 'test session')[:60]}\""
+        return f"{prefix} Low quality ({overall}/5) — \"{(goal or 'test session')[:60]}\""
+    return f"{prefix} Issue in session — \"{(goal or 'test session')[:60]}\""
 
 
 def _build_session_ticket_body(session: dict, turns: list, goal: str = "",
@@ -852,6 +871,12 @@ def _build_session_ticket_body(session: dict, turns: list, goal: str = "",
 
     lines = []
 
+    # Internal error banner
+    if _is_internal_error(session):
+        lines.append("{color:red}*This is an internal Test Kai error, not a Kai agent bug.*{color}")
+        lines.append(f"Stop reason: {session.get('stop_reason', '')[:300]}")
+        lines.append("")
+
     # Config
     lines.append("h3. Test Configuration")
     lines.append("||Field||Value||")
@@ -860,6 +885,9 @@ def _build_session_ticket_body(session: dict, turns: list, goal: str = "",
     lines.append(f"|Environment|{env_name or session.get('env_key', '-')}|")
     lines.append(f"|Judge Model|{session.get('eval_model', '-')}|")
     lines.append(f"|Total Exchanges|{len(turns)}|")
+    stop_reason = session.get("stop_reason", "")
+    if stop_reason and stop_reason != "completed":
+        lines.append(f"|Stop Reason|{stop_reason[:200]}|")
     lines.append("")
 
     # Session eval

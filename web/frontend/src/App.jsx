@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock, TrendingUp, Users, Swords, Coffee, Code } from 'lucide-react'
+import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock, TrendingUp, Users, Swords, Coffee, Code, Wand2, Radar, ShieldCheck, FolderTree } from 'lucide-react'
 import './App.css'
 import { AdminContext, useAdmin } from './AdminContext'
 import SessionLauncher from './components/SessionLauncher'
@@ -15,6 +15,10 @@ import EnvironmentSettings from './components/EnvironmentSettings'
 import LoadTestUsers from './components/LoadTestUsers'
 import SuperfightArena from './components/SuperfightArena'
 import Guideline from './components/Guideline'
+import TestPlanner from './components/TestPlanner'
+import TestCaseManager from './components/TestCaseManager'
+import ScoutManager from './components/ScoutManager'
+import CoverageDashboard from './components/CoverageDashboard'
 import NotificationPanel from './components/NotificationPanel'
 import FeedbackPanel from './components/FeedbackPanel'
 import AskJoePanel from './components/AskJoePanel'
@@ -79,6 +83,16 @@ function AdminButton() {
           </form>
         </div>
       )}
+    </div>
+  )
+}
+
+function AdminOnly() {
+  return (
+    <div style={{ textAlign: 'center', padding: '4rem 1rem', color: 'var(--text-muted)' }}>
+      <Lock size={32} style={{ marginBottom: '0.75rem', opacity: 0.4 }} />
+      <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>Admin Access Required</div>
+      <div style={{ fontSize: '0.8rem' }}>Sign in to access this feature.</div>
     </div>
   )
 }
@@ -152,6 +166,9 @@ function App() {
             <NavLink to="/matches" className={({ isActive }) => isActive ? 'active' : ''}>
               <Trophy size={16} /> Matches
             </NavLink>
+            <NavLink to="/sessions" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
+              <List size={14} /> Rounds
+            </NavLink>
             <NavLink to="/trends" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
               <TrendingUp size={14} /> Match Analysis
             </NavLink>
@@ -164,9 +181,22 @@ function App() {
             <NavLink to="/load-test/fighters" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
               <Users size={14} /> Talent Scouting
             </NavLink>
-            <NavLink to="/sessions" className={({ isActive }) => isActive ? 'active' : ''}>
-              <List size={16} /> Rounds
-            </NavLink>
+            {admin && (
+              <>
+                <NavLink to="/test-manager" className={({ isActive }) => isActive ? 'active' : ''}>
+                  <FolderTree size={16} /> Test Manager
+                </NavLink>
+                <NavLink to="/test-planner" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
+                  <Wand2 size={14} /> AI Generator
+                </NavLink>
+                <NavLink to="/scout" className={({ isActive }) => isActive ? 'active' : ''}>
+                  <Radar size={16} /> Scout
+                </NavLink>
+                <NavLink to="/coverage" className={({ isActive }) => isActive ? 'active' : ''}>
+                  <ShieldCheck size={16} /> Coverage
+                </NavLink>
+              </>
+            )}
             <NavLink to="/rubric" className={({ isActive }) => isActive ? 'active' : ''}>
               <Scale size={16} /> Judging Criteria
             </NavLink>
@@ -231,6 +261,10 @@ function App() {
             <Route path="/guideline" element={<Guideline />} />
             <Route path="/load-test" element={<SuperfightArena />} />
             <Route path="/load-test/fighters" element={<LoadTestUsers />} />
+            <Route path="/test-manager" element={admin ? <TestCaseManager /> : <AdminOnly />} />
+            <Route path="/test-planner" element={admin ? <TestPlanner /> : <AdminOnly />} />
+            <Route path="/scout" element={admin ? <ScoutManager /> : <AdminOnly />} />
+            <Route path="/coverage" element={admin ? <CoverageDashboard /> : <AdminOnly />} />
             <Route path="/environment" element={<EnvironmentSettings />} />
           </Routes>
           <footer className="app-footer">
