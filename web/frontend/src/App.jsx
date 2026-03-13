@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock, TrendingUp, Users, Swords, Coffee, Code, Wand2, Radar, ShieldCheck, FolderTree } from 'lucide-react'
+import { Flame, LayoutDashboard, List, BarChart3, Settings, Zap, Trophy, Heart, HeartOff, BookOpen, Scale, Globe, User, LogOut, Lock, TrendingUp, Users, Swords, Coffee, Code, Wand2, Radar, ShieldCheck, FolderTree, Database } from 'lucide-react'
 import './App.css'
 import { AdminContext, useAdmin } from './AdminContext'
 import SessionLauncher from './components/SessionLauncher'
@@ -19,6 +19,7 @@ import TestPlanner from './components/TestPlanner'
 import TestCaseManager from './components/TestCaseManager'
 import ScoutManager from './components/ScoutManager'
 import CoverageDashboard from './components/CoverageDashboard'
+import DataSources from './components/DataSources'
 import NotificationPanel from './components/NotificationPanel'
 import FeedbackPanel from './components/FeedbackPanel'
 import AskJoePanel from './components/AskJoePanel'
@@ -186,6 +187,9 @@ function App() {
                 <NavLink to="/test-manager" className={({ isActive }) => isActive ? 'active' : ''}>
                   <FolderTree size={16} /> Test Manager
                 </NavLink>
+                <NavLink to="/test-manager/data-sources" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
+                  <Database size={14} /> Data Sources
+                </NavLink>
                 <NavLink to="/test-planner" className={({ isActive }) => isActive ? 'active sub-nav' : 'sub-nav'}>
                   <Wand2 size={14} /> AI Generator
                 </NavLink>
@@ -262,6 +266,7 @@ function App() {
             <Route path="/load-test" element={<SuperfightArena />} />
             <Route path="/load-test/fighters" element={<LoadTestUsers />} />
             <Route path="/test-manager" element={admin ? <TestCaseManager /> : <AdminOnly />} />
+            <Route path="/test-manager/data-sources" element={admin ? <DataSources /> : <AdminOnly />} />
             <Route path="/test-planner" element={admin ? <TestPlanner /> : <AdminOnly />} />
             <Route path="/scout" element={admin ? <ScoutManager /> : <AdminOnly />} />
             <Route path="/coverage" element={admin ? <CoverageDashboard /> : <AdminOnly />} />
