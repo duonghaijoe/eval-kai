@@ -361,7 +361,7 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     if jql_filter:
         jql = jql_filter
     else:
-        clauses = [f"project = {project_key}"]
+        clauses = [f'project = "{project_key}"']
 
         # Sprint filter (requires board_id to resolve sprint names)
         if sprint_filter and board_id:
