@@ -210,21 +210,25 @@ class JiraClient:
     def search_tickets(self, jql: str, max_results: int = 20, fields: list = None) -> list:
         """Search Jira tickets via JQL with automatic pagination.
 
-        Jira Cloud caps at 100 per request. This method paginates to fetch
-        up to max_results total issues.
+        Uses the /rest/api/3/search/jql POST endpoint with nextPageToken
+        for pagination (Jira Cloud no longer supports startAt on this endpoint).
         Raises on HTTP errors so callers can handle failures explicitly.
         """
         if fields is None:
             fields = ["summary", "status", "assignee", "labels"]
 
         all_issues = []
-        start_at = 0
-        page_size = min(max_results, 100)  # Jira caps at 100
+        next_page_token = None
+        page_size = min(max_results, 100)
 
         while len(all_issues) < max_results:
+            body = {"jql": jql, "maxResults": page_size, "fields": fields}
+            if next_page_token:
+                body["nextPageToken"] = next_page_token
+
             resp = self.client.post(
                 f"{self.base_url}/rest/api/3/search/jql",
-                json={"jql": jql, "maxResults": page_size, "startAt": start_at, "fields": fields},
+                json=body,
                 auth=self._auth(),
                 headers=self._headers(),
             )
@@ -235,10 +239,9 @@ class JiraClient:
             data = resp.json()
             batch = data.get("issues", [])
             all_issues.extend(batch)
-            total = data.get("total", 0)
 
-            start_at += len(batch)
-            if not batch or start_at >= total:
+            next_page_token = data.get("nextPageToken")
+            if not batch or not next_page_token:
                 break
 
         return all_issues[:max_results]
