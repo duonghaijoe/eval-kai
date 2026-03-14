@@ -1779,7 +1779,7 @@ def api_seed_boards(req: SeedBoardsRequest, _user: str = Depends(require_admin))
         config = {
             "project_key": project_key,
             "board_id": str(board_id),
-            "sprint_filter": "active",
+            "sync_window": "2w",
             "include_subtasks": True,
         }
         source = create_data_source("_shared", "jira", name, config)

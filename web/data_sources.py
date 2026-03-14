@@ -350,7 +350,8 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     raw_key = config.get("project_key") or jira_cfg.get("project_key", "QUAL")
     project_key = raw_key.split("/")[0].strip().upper()
     board_id = config.get("board_id", "")
-    sprint_filter = config.get("sprint_filter", "")
+    # Sync window: "1w", "2w", "1m", "3m", "6m" — consistent for both Sprint & Kanban boards
+    sync_window = config.get("sync_window", "2w")
     date_from = config.get("date_from", "")
     date_to = config.get("date_to", "")
     epic_keys = config.get("epic_keys", [])
@@ -363,36 +364,27 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     else:
         clauses = [f'project = "{project_key}"']
 
-        # Sprint filter (requires board_id to resolve sprint IDs)
-        if sprint_filter and board_id:
-            sprint_result = _resolve_sprint_clause(client, board_id, sprint_filter)
-            if sprint_result.get("clause"):
-                clauses.append(sprint_result["clause"])
-            elif sprint_result.get("kanban"):
-                # Kanban board — no sprints exist, use 2-week window (standard sprint timeframe)
-                logger.info(f"Board {board_id} is Kanban — using 2-week window as sprint equivalent")
-                clauses.append('updated >= -2w')
-            else:
-                # Scrum board but no matching sprints — don't fetch all
-                logger.info(f"Sprint filter '{sprint_filter}' matched nothing for board {board_id}")
-                return {"items_count": 0, "fetched": 0, "note": f"No {sprint_filter} sprints found on board {board_id}"}
+        # Time window — applies to all boards (Sprint or Kanban)
+        if date_from or date_to:
+            # Explicit date range takes priority
+            if date_from:
+                clauses.append(f'updated >= "{date_from}"')
+            if date_to:
+                clauses.append(f'updated <= "{date_to}"')
+        elif sync_window:
+            # Relative window: "1w", "2w", "1m", "3m", "6m"
+            clauses.append(f'updated >= -{sync_window}')
 
         # Epic filter
         if epic_keys:
             epic_list = ",".join(f'"{k}"' for k in epic_keys)
             clauses.append(f"'Epic Link' IN ({epic_list})")
 
-        # Date range filter
-        if date_from:
-            clauses.append(f'created >= "{date_from}"')
-        if date_to:
-            clauses.append(f'created <= "{date_to}"')
-
         # Subtask filter — don't restrict issue types (projects have custom types)
         if not include_subtasks:
             clauses.append("issuetype NOT IN subTaskIssueTypes()")
 
-        jql = " AND ".join(clauses) + " ORDER BY created DESC"
+        jql = " AND ".join(clauses) + " ORDER BY updated DESC"
 
     logger.info(f"Syncing Jira source {source_id}: JQL = {jql}")
 

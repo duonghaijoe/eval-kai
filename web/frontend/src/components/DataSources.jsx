@@ -5,7 +5,7 @@ import { useAdmin } from '../AdminContext'
 import {
   listDataSources, createDataSource, updateDataSource, deleteDataSource,
   syncDataSource, syncAllDataSources, getDataSourceItems, getConfig,
-  getBoardSprints, seedBoards,
+  seedBoards,
 } from '../api'
 
 const TEAM_BOARDS = [
@@ -229,7 +229,8 @@ export default function DataSources() {
                           {typeInfo.label || src.source_type}
                           {src.config?.project_key && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#f5f5f5', fontWeight: 500 }}>{src.config.project_key}</span>}
                           {src.config?.board_id && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#fffbeb', color: 'var(--yellow)', fontWeight: 500 }}>Board {src.config.board_id}</span>}
-                          {src.config?.sprint_filter && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#ecfdf5', color: 'var(--green)', fontWeight: 500 }}>{src.config.sprint_filter}</span>}
+                          {src.config?.sync_window && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#ecfdf5', color: 'var(--green)', fontWeight: 500 }}>{src.config.sync_window}</span>}
+                          {src.config?.date_from && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#eff6ff', color: 'var(--blue)', fontWeight: 500 }}>from {src.config.date_from}</span>}
                           — {src.item_count || 0} items
                           {src.shared && <span style={{ fontSize: '0.58rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#f0f0ff', color: 'var(--accent)', fontWeight: 500 }}>Shared</span>}
                         </div>
@@ -380,8 +381,6 @@ function DataSourceModal({ source, envKey, onClose, onSaved }) {
   const [enabled, setEnabled] = useState(source?.enabled !== false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
-  const [sprints, setSprints] = useState([])
-  const [loadingSprints, setLoadingSprints] = useState(false)
 
   const handleSave = async () => {
     if (!name.trim()) { setError('Name is required'); return }
@@ -408,24 +407,8 @@ function DataSourceModal({ source, envKey, onClose, onSaved }) {
     if (m) {
       setConfig(c => ({ ...c, project_key: m[1], board_id: m[2] }))
       if (!name) setName(`${m[1]} Board ${m[2]}`)
-      loadSprints(m[2])
     }
   }
-
-  const loadSprints = async (boardId) => {
-    if (!boardId) return
-    setLoadingSprints(true)
-    try {
-      const data = await getBoardSprints(boardId)
-      setSprints(data.sprints || [])
-    } catch { setSprints([]) }
-    setLoadingSprints(false)
-  }
-
-  // Load sprints when board_id is set
-  useEffect(() => {
-    if (config.board_id && sourceType === 'jira') loadSprints(config.board_id)
-  }, []) // eslint-disable-line
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
@@ -474,68 +457,38 @@ function DataSourceModal({ source, envKey, onClose, onSaved }) {
                 <input value={config.project_key || ''} onChange={e => updateCfg('project_key', e.target.value)} placeholder="TO" style={{ width: '100%' }} />
               </div>
               <div>
-                <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Board ID</label>
-                <input value={config.board_id || ''} onChange={e => { updateCfg('board_id', e.target.value); if (e.target.value.match(/^\d+$/)) loadSprints(e.target.value) }} placeholder="362" style={{ width: '100%' }} />
+                <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Board ID (optional)</label>
+                <input value={config.board_id || ''} onChange={e => updateCfg('board_id', e.target.value)} placeholder="362" style={{ width: '100%' }} />
               </div>
             </div>
             <div>
-              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Sprint Filter</label>
-              <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.3rem', flexWrap: 'wrap' }}>
-                {['active', 'closed', 'future'].map(sf => (
-                  <button key={sf} onClick={() => updateCfg('sprint_filter', sf)}
+              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Sync Window</label>
+              <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                {[
+                  { value: '1w', label: '1 Week' },
+                  { value: '2w', label: '2 Weeks' },
+                  { value: '1m', label: '1 Month' },
+                  { value: '3m', label: '3 Months' },
+                  { value: '6m', label: '6 Months' },
+                ].map(w => (
+                  <button key={w.value} onClick={() => { updateCfg('sync_window', w.value); updateCfg('date_from', ''); updateCfg('date_to', '') }}
                     style={{
-                      fontSize: '0.68rem', padding: '0.2em 0.6em', borderRadius: '10px', cursor: 'pointer',
-                      border: config.sprint_filter === sf ? '1.5px solid var(--accent)' : '1px solid var(--border)',
-                      background: config.sprint_filter === sf ? '#f0f0ff' : 'transparent',
-                      color: config.sprint_filter === sf ? 'var(--accent)' : 'var(--text-secondary)',
-                      fontWeight: config.sprint_filter === sf ? 600 : 400,
+                      fontSize: '0.68rem', padding: '0.25em 0.65em', borderRadius: '10px', cursor: 'pointer',
+                      border: (config.sync_window || '2w') === w.value && !config.date_from ? '1.5px solid var(--accent)' : '1px solid var(--border)',
+                      background: (config.sync_window || '2w') === w.value && !config.date_from ? '#f0f0ff' : 'transparent',
+                      color: (config.sync_window || '2w') === w.value && !config.date_from ? 'var(--accent)' : 'var(--text-secondary)',
+                      fontWeight: (config.sync_window || '2w') === w.value && !config.date_from ? 600 : 400,
                     }}>
-                    {sf.charAt(0).toUpperCase() + sf.slice(1)}
+                    {w.label}
                   </button>
                 ))}
-                {config.sprint_filter && !['active', 'closed', 'future'].includes(config.sprint_filter) && (
-                  <span style={{ fontSize: '0.68rem', color: 'var(--accent)', padding: '0.2em 0.6em', border: '1.5px solid var(--accent)', borderRadius: '10px', background: '#f0f0ff', fontWeight: 600 }}>
-                    {config.sprint_filter}
-                  </span>
-                )}
-                {config.sprint_filter && (
-                  <button onClick={() => updateCfg('sprint_filter', '')}
-                    style={{ fontSize: '0.65rem', padding: '0.2em 0.5em', cursor: 'pointer', color: 'var(--text-muted)', border: 'none', background: 'none' }}>
-                    Clear
-                  </button>
-                )}
               </div>
-              {config.board_id && (
-                <div style={{ maxHeight: 120, overflow: 'auto', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.2rem' }}>
-                  {loadingSprints ? (
-                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', padding: '0.3rem' }}><span className="spinner" style={{ width: 10, height: 10 }} /> Loading sprints...</div>
-                  ) : sprints.length === 0 ? (
-                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', padding: '0.3rem' }}>No sprints found. Check board ID or credentials.</div>
-                  ) : (
-                    sprints.slice().reverse().map(sp => (
-                      <div key={sp.id} onClick={() => updateCfg('sprint_filter', sp.name)}
-                        style={{
-                          fontSize: '0.68rem', padding: '0.25rem 0.4rem', cursor: 'pointer', borderRadius: '4px',
-                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                          background: config.sprint_filter === sp.name ? '#f0f0ff' : 'transparent',
-                        }}>
-                        <span style={{ fontWeight: config.sprint_filter === sp.name ? 600 : 400 }}>{sp.name}</span>
-                        <span style={{
-                          fontSize: '0.6rem', padding: '0.1em 0.4em', borderRadius: '8px',
-                          background: sp.state === 'active' ? '#ecfdf5' : sp.state === 'closed' ? '#f5f5f5' : '#fffbeb',
-                          color: sp.state === 'active' ? 'var(--green)' : sp.state === 'closed' ? 'var(--text-muted)' : 'var(--yellow)',
-                        }}>{sp.state}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-                Use "Active" for current sprint, or click a specific sprint name. Leave empty for all issues.
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                Fetches issues updated within this window. Works for both Sprint and Kanban boards.
               </div>
             </div>
             <div>
-              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Date Range (optional)</label>
+              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Custom Date Range (overrides sync window)</label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
                 <div>
                   <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>From</label>
@@ -546,6 +499,12 @@ function DataSourceModal({ source, envKey, onClose, onSaved }) {
                   <input type="date" value={config.date_to || ''} onChange={e => updateCfg('date_to', e.target.value)} style={{ width: '100%', fontSize: '0.72rem' }} />
                 </div>
               </div>
+              {(config.date_from || config.date_to) && (
+                <button onClick={() => { updateCfg('date_from', ''); updateCfg('date_to', '') }}
+                  style={{ fontSize: '0.62rem', color: 'var(--text-muted)', border: 'none', background: 'none', cursor: 'pointer', marginTop: '0.2rem', padding: 0 }}>
+                  Clear dates (use sync window instead)
+                </button>
+              )}
             </div>
             <div>
               <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Epic Keys (comma-separated, optional)</label>
