@@ -287,7 +287,7 @@ class JiraClient:
     def find_duplicates(self, goal: str, error: str = None) -> list:
         """Search for potential duplicate tickets."""
         # Search by label + open status
-        jql = f'project = {self.project_key} AND labels = "{self.label}" AND status != Done'
+        jql = f'project = "{self.project_key}" AND labels = "{self.label}" AND status != Done'
         if error:
             # Also search by error text in summary
             safe_err = error[:80].replace('"', '\\"')
@@ -1239,7 +1239,7 @@ def get_jira_filter_url() -> str:
     base = cfg.get("base_url", "https://katalon.atlassian.net").rstrip("/")
     label = cfg.get("label", "boxing-test-kai")
     project = cfg.get("project_key", "QUAL")
-    jql = f'project = {project} AND labels = "{label}" ORDER BY created DESC'
+    jql = f'project = "{project}" AND labels = "{label}" ORDER BY created DESC'
     from urllib.parse import quote
     return f"{base}/issues/?jql={quote(jql)}"
 
