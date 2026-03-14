@@ -363,11 +363,15 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     else:
         clauses = [f'project = "{project_key}"']
 
-        # Sprint filter (requires board_id to resolve sprint names)
+        # Sprint filter (requires board_id to resolve sprint IDs)
         if sprint_filter and board_id:
             sprint_clause = _resolve_sprint_clause(client, board_id, sprint_filter)
             if sprint_clause:
                 clauses.append(sprint_clause)
+            else:
+                # Sprint was requested but none found — return empty, don't fetch all
+                logger.info(f"Sprint filter '{sprint_filter}' matched nothing for board {board_id} — returning 0 items")
+                return {"items_count": 0, "fetched": 0, "note": f"No {sprint_filter} sprints found on board {board_id}"}
 
         # Epic filter
         if epic_keys:
