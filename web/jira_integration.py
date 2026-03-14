@@ -14,7 +14,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 
@@ -208,34 +208,56 @@ class JiraClient:
             return {"ok": False, "error": str(e)}
 
     def search_tickets(self, jql: str, max_results: int = 20, fields: list = None) -> list:
-        """Search Jira tickets via JQL (uses POST to avoid 410 on GET)."""
+        """Search Jira tickets via JQL (uses POST to avoid 410 on GET).
+
+        Raises on HTTP errors so callers can handle failures explicitly.
+        """
         if fields is None:
             fields = ["summary", "status", "assignee", "labels"]
+        resp = self.client.post(
+            f"{self.base_url}/rest/api/3/search/jql",
+            json={"jql": jql, "maxResults": max_results, "fields": fields},
+            auth=self._auth(),
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            error_text = resp.text[:300]
+            raise ValueError(f"Jira search failed (HTTP {resp.status_code}): {error_text}")
+        return resp.json().get("issues", [])
+
+    def search_tickets_safe(self, jql: str, max_results: int = 20, fields: list = None) -> list:
+        """Like search_tickets but returns [] on error (for non-critical callers)."""
         try:
-            resp = self.client.post(
-                f"{self.base_url}/rest/api/3/search/jql",
-                json={"jql": jql, "maxResults": max_results, "fields": fields},
-                auth=self._auth(),
-                headers=self._headers(),
-            )
-            resp.raise_for_status()
-            return resp.json().get("issues", [])
+            return self.search_tickets(jql, max_results, fields)
         except Exception as e:
             logger.warning(f"Jira search failed: {e}")
             return []
 
-    def get_board_sprints(self, board_id: int | str) -> list:
-        """Get sprints for a Jira board (Agile API)."""
+    def get_board_sprints(self, board_id: Union[int, str], state: str = None) -> list:
+        """Get sprints for a Jira board (Agile API).
+
+        Args:
+            state: Optional filter — 'active', 'closed', or 'future'.
+                   None returns all sprints.
+        Returns empty list for Kanban boards (which don't support sprints).
+        """
         try:
             sprints = []
             start_at = 0
             while True:
+                params = {"startAt": start_at, "maxResults": 50}
+                if state:
+                    params["state"] = state
                 resp = self.client.get(
                     f"{self.base_url}/rest/agile/1.0/board/{board_id}/sprint",
-                    params={"startAt": start_at, "maxResults": 50},
+                    params=params,
                     auth=self._auth(),
                     headers=self._headers(),
                 )
+                # 400 = board doesn't support sprints (Kanban)
+                if resp.status_code == 400:
+                    logger.info(f"Board {board_id} does not support sprints (Kanban)")
+                    return []
                 resp.raise_for_status()
                 data = resp.json()
                 batch = data.get("values", [])
@@ -248,7 +270,7 @@ class JiraClient:
             logger.warning(f"Failed to get sprints for board {board_id}: {e}")
             return []
 
-    def get_board_config(self, board_id: int | str) -> dict:
+    def get_board_config(self, board_id: Union[int, str]) -> dict:
         """Get board configuration (includes project info)."""
         try:
             resp = self.client.get(
@@ -270,7 +292,7 @@ class JiraClient:
             # Also search by error text in summary
             safe_err = error[:80].replace('"', '\\"')
             jql += f' AND summary ~ "{safe_err}"'
-        issues = self.search_tickets(jql, max_results=10)
+        issues = self.search_tickets_safe(jql, max_results=10)
         return issues
 
     def create_ticket(self, summary: str, description: str, priority: str = "Medium",

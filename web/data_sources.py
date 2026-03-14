@@ -325,6 +325,7 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     """Fetch Jira issues and store as items.
 
     Supports: project_key, board_id, sprint filter, date range, epic keys, JQL.
+    Fetches issues with parent/subtask hierarchy for traceability.
 
     Auth priority:
     1. Data source config (username + api_token)
@@ -345,9 +346,11 @@ def _sync_jira(source_id: str, config: dict) -> dict:
 
     client = JiraClient(jira_cfg)
 
-    project_key = config.get("project_key") or jira_cfg.get("project_key", "QUAL")
+    # Sanitize project_key — extract just the key part
+    raw_key = config.get("project_key") or jira_cfg.get("project_key", "QUAL")
+    project_key = raw_key.split("/")[0].strip().upper()
     board_id = config.get("board_id", "")
-    sprint_filter = config.get("sprint_filter", "")  # "active", sprint name, or sprint ID
+    sprint_filter = config.get("sprint_filter", "")
     date_from = config.get("date_from", "")
     date_to = config.get("date_to", "")
     epic_keys = config.get("epic_keys", [])
@@ -377,18 +380,22 @@ def _sync_jira(source_id: str, config: dict) -> dict:
         if date_to:
             clauses.append(f'created <= "{date_to}"')
 
-        # Subtask filter
+        # Subtask filter — don't restrict issue types (projects have custom types)
         if not include_subtasks:
-            clauses.append("issuetype NOT IN (Sub-task)")
-        else:
-            clauses.append("issuetype IN (Epic, Story, Task, Bug, Sub-task)")
+            clauses.append("issuetype NOT IN subTaskIssueTypes()")
 
         jql = " AND ".join(clauses) + " ORDER BY created DESC"
 
     logger.info(f"Syncing Jira source {source_id}: JQL = {jql}")
 
-    # Fetch issues with full fields needed for data source items
-    issue_fields = ["summary", "status", "assignee", "labels", "description", "issuetype", "priority", "sprint"]
+    # Fetch issues — use fields that work in Jira Cloud REST API v3
+    # Note: "sprint" is NOT a standard field name — it's a custom field (customfield_10020)
+    # Use parent to get epic/parent hierarchy instead
+    issue_fields = [
+        "summary", "status", "assignee", "labels", "description",
+        "issuetype", "priority", "parent", "subtasks",
+    ]
+    # search_tickets now raises on error — let it propagate to show proper error status
     issues = client.search_tickets(jql, max_results=500, fields=issue_fields)
 
     current_ids = set()
@@ -398,11 +405,28 @@ def _sync_jira(source_id: str, config: dict) -> dict:
             fields = issue.get("fields", {})
             summary = fields.get("summary", "")
             status = fields.get("status", {}).get("name", "")
-            issue_type = fields.get("issuetype", {}).get("name", "").lower()
+            issuetype_obj = fields.get("issuetype", {}) or {}
+            issue_type = issuetype_obj.get("name", "").lower()
+            issue_type_icon = issuetype_obj.get("iconUrl", "")
             labels = fields.get("labels", [])
-            priority = fields.get("priority", {}).get("name", "") if fields.get("priority") else ""
-            sprint_info = fields.get("sprint")
-            sprint_name = sprint_info.get("name", "") if isinstance(sprint_info, dict) else ""
+            priority_obj = fields.get("priority")
+            priority = priority_obj.get("name", "") if isinstance(priority_obj, dict) else ""
+
+            # Parent hierarchy — epic or parent issue
+            parent = fields.get("parent")
+            parent_key = parent.get("key", "") if isinstance(parent, dict) else ""
+            parent_summary = ""
+            parent_type = ""
+            if isinstance(parent, dict):
+                parent_summary = parent.get("fields", {}).get("summary", "")
+                parent_type = parent.get("fields", {}).get("issuetype", {}).get("name", "").lower() if parent.get("fields") else ""
+
+            # Subtasks
+            subtask_keys = []
+            raw_subtasks = fields.get("subtasks", [])
+            if isinstance(raw_subtasks, list):
+                subtask_keys = [st.get("key", "") for st in raw_subtasks if st.get("key")]
+
             description_text = _extract_jira_description(fields.get("description"))
 
             content = f"Status: {status}\n{description_text}" if description_text else f"Status: {status}"
@@ -414,7 +438,11 @@ def _sync_jira(source_id: str, config: dict) -> dict:
                 content=content, item_type=item_type, external_url=external_url,
                 metadata={
                     "status": status, "labels": labels, "issue_type": issue_type,
-                    "priority": priority, "sprint": sprint_name,
+                    "issue_type_icon": issue_type_icon,
+                    "priority": priority,
+                    "parent_key": parent_key, "parent_summary": parent_summary,
+                    "parent_type": parent_type,
+                    "subtask_keys": subtask_keys,
                 },
             )
             current_ids.add(key)
@@ -445,16 +473,12 @@ def _resolve_sprint_clause(client, board_id: str, sprint_filter: str) -> str:
     sf = sprint_filter.strip().lower()
 
     if sf in ("active", "closed", "future"):
-        # Fetch actual sprints from board to check if board uses sprints
-        sprints = client.get_board_sprints(board_id)
+        # Fetch sprints with state filter from Agile API (efficient — server-side filter)
+        sprints = client.get_board_sprints(board_id, state=sf)
         if not sprints:
-            logger.info(f"Board {board_id} has no sprints (likely Kanban) — skipping sprint filter")
+            logger.info(f"Board {board_id} has no {sf} sprints (or Kanban board) — skipping sprint filter")
             return ""
-        matching = [s for s in sprints if s.get("state") == sf]
-        if not matching:
-            logger.info(f"Board {board_id} has no {sf} sprints — skipping sprint filter")
-            return ""
-        sprint_ids = [str(s["id"]) for s in matching]
+        sprint_ids = [str(s["id"]) for s in sprints]
         return f"sprint IN ({','.join(sprint_ids)})"
 
     # Numeric = sprint ID
@@ -487,8 +511,13 @@ def _extract_adf_text(node: dict, texts: list):
 
 
 def _map_jira_issue_type(issue_type: str) -> str:
-    mapping = {"epic": "epic", "story": "story", "bug": "bug", "task": "story", "sub-task": "story"}
-    return mapping.get(issue_type, "story")
+    mapping = {
+        "epic": "epic", "story": "story", "bug": "bug",
+        "task": "task", "sub-task": "subtask", "subtask": "subtask",
+        "feature": "story", "improvement": "story", "new feature": "story",
+        "test": "task", "qa task": "task", "spike": "task",
+    }
+    return mapping.get(issue_type, "task")
 
 
 # ── Confluence Sync ──────────────────────────────────────────────

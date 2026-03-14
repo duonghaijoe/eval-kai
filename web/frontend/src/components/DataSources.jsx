@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Database, Plus, RefreshCw, Trash2, Edit3, ChevronRight, ChevronDown, AlertCircle, ExternalLink, ArrowLeft, Layers } from 'lucide-react'
+import { Database, Plus, RefreshCw, Trash2, Edit3, ChevronRight, ChevronDown, AlertCircle, ExternalLink, ArrowLeft, Layers, Bug, BookOpen, Zap, CheckSquare, GitBranch, Circle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAdmin } from '../AdminContext'
 import {
@@ -17,6 +17,48 @@ const TEAM_BOARDS = [
   { name: 'MT Team', project_key: 'TO', board_id: '399' },
   { name: 'Test Cloud', project_key: 'KTC', board_id: '103' },
 ]
+
+const ISSUE_ICONS = {
+  epic: { icon: Zap, color: '#6554C0', bg: '#EAE6FF' },
+  story: { icon: BookOpen, color: '#36B37E', bg: '#E3FCEF' },
+  bug: { icon: Bug, color: '#FF5630', bg: '#FFEBE6' },
+  task: { icon: CheckSquare, color: '#2684FF', bg: '#DEEBFF' },
+  subtask: { icon: GitBranch, color: '#6B778C', bg: '#F4F5F7' },
+  page: { icon: BookOpen, color: '#6554C0', bg: '#EAE6FF' },
+  tool: { icon: Zap, color: '#FF8B00', bg: '#FFF0B3' },
+  context: { icon: BookOpen, color: '#6B778C', bg: '#F4F5F7' },
+}
+
+function IssueTypeIcon({ type, size = 12 }) {
+  const cfg = ISSUE_ICONS[type] || { icon: Circle, color: '#6B778C', bg: '#F4F5F7' }
+  const Icon = cfg.icon
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      width: size + 6, height: size + 6, borderRadius: '3px',
+      background: cfg.bg, flexShrink: 0,
+    }}>
+      <Icon size={size} style={{ color: cfg.color }} />
+    </span>
+  )
+}
+
+const STATUS_COLORS = {
+  'done': '#36B37E', 'closed': '#36B37E', 'resolved': '#36B37E',
+  'in progress': '#2684FF', 'in review': '#2684FF', 'in development': '#2684FF',
+  'to do': '#6B778C', 'open': '#6B778C', 'backlog': '#6B778C', 'new': '#6B778C',
+}
+
+function StatusBadge({ status }) {
+  if (!status) return null
+  const color = STATUS_COLORS[status.toLowerCase()] || '#6B778C'
+  return (
+    <span style={{
+      fontSize: '0.58rem', padding: '0.1em 0.4em', borderRadius: '8px',
+      background: `${color}18`, color, fontWeight: 500, whiteSpace: 'nowrap',
+    }}>{status}</span>
+  )
+}
 
 function timeAgo(dateStr) {
   if (!dateStr) return ''
@@ -251,33 +293,53 @@ export default function DataSources() {
                         <table style={{ width: '100%', fontSize: '0.72rem', borderCollapse: 'collapse' }}>
                           <thead>
                             <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                              <th style={{ textAlign: 'left', padding: '0.3rem 0.4rem', fontWeight: 600, width: 28 }}></th>
                               <th style={{ textAlign: 'left', padding: '0.3rem 0.4rem', fontWeight: 600 }}>Title</th>
-                              <th style={{ textAlign: 'left', padding: '0.3rem 0.4rem', fontWeight: 600, width: 70 }}>Type</th>
+                              <th style={{ textAlign: 'left', padding: '0.3rem 0.4rem', fontWeight: 600, width: 80 }}>Status</th>
+                              <th style={{ textAlign: 'left', padding: '0.3rem 0.4rem', fontWeight: 600, width: 60 }}>Priority</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {srcItems.slice(0, 50).map(item => (
-                              <tr key={item.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                                <td style={{ padding: '0.3rem 0.4rem' }}>
-                                  {item.external_url ? (
-                                    <a href={item.external_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-                                      {item.title} <ExternalLink size={9} style={{ verticalAlign: 'middle' }} />
-                                    </a>
-                                  ) : item.title}
-                                </td>
-                                <td style={{ padding: '0.3rem 0.4rem' }}>
-                                  <span style={{ fontSize: '0.65rem', padding: '0.1em 0.4em', borderRadius: '8px', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
-                                    {item.item_type}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
+                            {srcItems.slice(0, 80).map(item => {
+                              const meta = item.metadata || {}
+                              const hasParent = meta.parent_key && meta.parent_type !== 'epic'
+                              return (
+                                <tr key={item.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                                  <td style={{ padding: '0.3rem 0.4rem', textAlign: 'center' }}>
+                                    <IssueTypeIcon type={item.item_type} size={11} />
+                                  </td>
+                                  <td style={{ padding: '0.3rem 0.4rem' }}>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.1rem' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                        {item.external_url ? (
+                                          <a href={item.external_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none', fontWeight: 500 }}>
+                                            {item.title} <ExternalLink size={8} style={{ verticalAlign: 'middle', opacity: 0.5 }} />
+                                          </a>
+                                        ) : <span style={{ fontWeight: 500 }}>{item.title}</span>}
+                                      </div>
+                                      {meta.parent_key && (
+                                        <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.2rem', paddingLeft: hasParent ? '0.5rem' : 0 }}>
+                                          <IssueTypeIcon type={meta.parent_type === 'epic' ? 'epic' : 'story'} size={8} />
+                                          {meta.parent_key}{meta.parent_summary ? `: ${meta.parent_summary}` : ''}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td style={{ padding: '0.3rem 0.4rem' }}>
+                                    <StatusBadge status={meta.status} />
+                                  </td>
+                                  <td style={{ padding: '0.3rem 0.4rem', fontSize: '0.62rem', color: 'var(--text-muted)' }}>
+                                    {meta.priority || '-'}
+                                  </td>
+                                </tr>
+                              )
+                            })}
                           </tbody>
                         </table>
                       )}
-                      {srcItems.length > 50 && (
+                      {srcItems.length > 80 && (
                         <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', padding: '0.3rem 0' }}>
-                          Showing 50 of {srcItems.length} items
+                          Showing 80 of {srcItems.length} items
                         </div>
                       )}
                     </div>
