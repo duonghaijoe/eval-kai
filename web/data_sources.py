@@ -419,7 +419,9 @@ def _sync_jira(source_id: str, config: dict) -> dict:
             )
             current_ids.add(key)
 
-        _remove_stale_items(conn, source_id, current_ids)
+        # Only remove stale items if we actually fetched some — don't wipe on empty results
+        if current_ids:
+            _remove_stale_items(conn, source_id, current_ids)
         count = conn.execute(
             "SELECT COUNT(*) as cnt FROM data_source_items WHERE source_id = ?", (source_id,)
         ).fetchone()["cnt"]
@@ -428,21 +430,33 @@ def _sync_jira(source_id: str, config: dict) -> dict:
 
 
 def _resolve_sprint_clause(client, board_id: str, sprint_filter: str) -> str:
-    """Resolve sprint filter to JQL clause.
+    """Resolve sprint filter to JQL clause using board's actual sprints.
+
+    Uses the Agile API to find real sprint IDs for the board.
+    Falls back gracefully if board has no sprints (Kanban boards).
 
     sprint_filter can be:
-    - "active" → openSprints()
-    - "closed" → closedSprints()
+    - "active" → find active sprints from board API
+    - "closed" → find closed sprints from board API
+    - "future" → find future sprints from board API
     - sprint name → sprint = "name"
     - sprint ID (numeric) → sprint = ID
     """
     sf = sprint_filter.strip().lower()
-    if sf == "active":
-        return "sprint IN openSprints()"
-    if sf == "closed":
-        return "sprint IN closedSprints()"
-    if sf == "future":
-        return "sprint IN futureSprints()"
+
+    if sf in ("active", "closed", "future"):
+        # Fetch actual sprints from board to check if board uses sprints
+        sprints = client.get_board_sprints(board_id)
+        if not sprints:
+            logger.info(f"Board {board_id} has no sprints (likely Kanban) — skipping sprint filter")
+            return ""
+        matching = [s for s in sprints if s.get("state") == sf]
+        if not matching:
+            logger.info(f"Board {board_id} has no {sf} sprints — skipping sprint filter")
+            return ""
+        sprint_ids = [str(s["id"]) for s in matching]
+        return f"sprint IN ({','.join(sprint_ids)})"
+
     # Numeric = sprint ID
     if sprint_filter.strip().isdigit():
         return f"sprint = {sprint_filter.strip()}"

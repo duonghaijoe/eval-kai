@@ -18,6 +18,20 @@ const TEAM_BOARDS = [
   { name: 'Test Cloud', project_key: 'KTC', board_id: '103' },
 ]
 
+function timeAgo(dateStr) {
+  if (!dateStr) return ''
+  const d = dateStr.endsWith('Z') ? new Date(dateStr) : new Date(dateStr + 'Z')
+  const now = new Date()
+  const sec = Math.floor((now - d) / 1000)
+  if (sec < 60) return 'just now'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const days = Math.floor(hr / 24)
+  return `${days}d ago`
+}
+
 const SOURCE_TYPES = [
   { value: 'jira', label: 'Jira', desc: 'Import issues from Jira project/epic', shared: true },
   { value: 'confluence', label: 'Confluence', desc: 'Import pages from Confluence space', shared: true },
@@ -183,7 +197,7 @@ export default function DataSources() {
                       <span style={{
                         fontSize: '0.65rem', padding: '0.15em 0.5em', borderRadius: '10px',
                         background: badge.bg, color: badge.color, fontWeight: 500,
-                      }}>{badge.label}</span>
+                      }}>{badge.label}{src.last_synced_at ? ` · ${timeAgo(src.last_synced_at)}` : ''}</span>
                       {isAdmin && (
                         <button
                           onClick={() => handleToggleEnabled(src.id, src.enabled)}
