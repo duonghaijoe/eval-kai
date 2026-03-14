@@ -365,12 +365,16 @@ def _sync_jira(source_id: str, config: dict) -> dict:
 
         # Sprint filter (requires board_id to resolve sprint IDs)
         if sprint_filter and board_id:
-            sprint_clause = _resolve_sprint_clause(client, board_id, sprint_filter)
-            if sprint_clause:
-                clauses.append(sprint_clause)
+            sprint_result = _resolve_sprint_clause(client, board_id, sprint_filter)
+            if sprint_result.get("clause"):
+                clauses.append(sprint_result["clause"])
+            elif sprint_result.get("kanban"):
+                # Kanban board — no sprints exist, fall back to recently updated issues
+                logger.info(f"Board {board_id} is Kanban — using updated >= -30d instead of sprint filter")
+                clauses.append('updated >= -30d')
             else:
-                # Sprint was requested but none found — return empty, don't fetch all
-                logger.info(f"Sprint filter '{sprint_filter}' matched nothing for board {board_id} — returning 0 items")
+                # Scrum board but no matching sprints — don't fetch all
+                logger.info(f"Sprint filter '{sprint_filter}' matched nothing for board {board_id}")
                 return {"items_count": 0, "fetched": 0, "note": f"No {sprint_filter} sprints found on board {board_id}"}
 
         # Epic filter
@@ -461,35 +465,38 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     return {"items_count": count, "fetched": len(issues)}
 
 
-def _resolve_sprint_clause(client, board_id: str, sprint_filter: str) -> str:
+def _resolve_sprint_clause(client, board_id: str, sprint_filter: str) -> dict:
     """Resolve sprint filter to JQL clause using board's actual sprints.
 
-    Uses the Agile API to find real sprint IDs for the board.
-    Falls back gracefully if board has no sprints (Kanban boards).
+    Returns dict with:
+    - {"clause": "sprint IN (...)"} — sprint filter resolved successfully
+    - {"kanban": True} — board is Kanban (no sprints), caller should use date fallback
+    - {} — Scrum board but no matching sprints found
 
-    sprint_filter can be:
-    - "active" → find active sprints from board API
-    - "closed" → find closed sprints from board API
-    - "future" → find future sprints from board API
-    - sprint name → sprint = "name"
-    - sprint ID (numeric) → sprint = ID
+    sprint_filter can be: "active", "closed", "future", sprint name, or sprint ID.
     """
     sf = sprint_filter.strip().lower()
 
     if sf in ("active", "closed", "future"):
-        # Fetch sprints with state filter from Agile API (efficient — server-side filter)
         sprints = client.get_board_sprints(board_id, state=sf)
         if not sprints:
-            logger.info(f"Board {board_id} has no {sf} sprints (or Kanban board) — skipping sprint filter")
-            return ""
+            # Check if board has ANY sprints to distinguish Kanban from empty Scrum
+            all_sprints = client.get_board_sprints(board_id)
+            if not all_sprints:
+                # No sprints at all → Kanban board
+                logger.info(f"Board {board_id} is Kanban (no sprints) — will use date fallback")
+                return {"kanban": True}
+            # Scrum board but no matching state
+            logger.info(f"Board {board_id} has sprints but none in '{sf}' state")
+            return {}
         sprint_ids = [str(s["id"]) for s in sprints]
-        return f"sprint IN ({','.join(sprint_ids)})"
+        return {"clause": f"sprint IN ({','.join(sprint_ids)})"}
 
     # Numeric = sprint ID
     if sprint_filter.strip().isdigit():
-        return f"sprint = {sprint_filter.strip()}"
+        return {"clause": f"sprint = {sprint_filter.strip()}"}
     # Sprint name — quote it
-    return f'sprint = "{sprint_filter.strip()}"'
+    return {"clause": f'sprint = "{sprint_filter.strip()}"'}
 
 
 def _extract_jira_description(desc) -> str:
