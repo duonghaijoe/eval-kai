@@ -369,9 +369,9 @@ def _sync_jira(source_id: str, config: dict) -> dict:
             if sprint_result.get("clause"):
                 clauses.append(sprint_result["clause"])
             elif sprint_result.get("kanban"):
-                # Kanban board — no sprints exist, fall back to recently updated issues
-                logger.info(f"Board {board_id} is Kanban — using updated >= -30d instead of sprint filter")
-                clauses.append('updated >= -30d')
+                # Kanban board — no sprints exist, use 2-week window (standard sprint timeframe)
+                logger.info(f"Board {board_id} is Kanban — using 2-week window as sprint equivalent")
+                clauses.append('updated >= -2w')
             else:
                 # Scrum board but no matching sprints — don't fetch all
                 logger.info(f"Sprint filter '{sprint_filter}' matched nothing for board {board_id}")
