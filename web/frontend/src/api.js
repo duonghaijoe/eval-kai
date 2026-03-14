@@ -862,6 +862,25 @@ export async function getDataSourceItems(id) {
   return res.json()
 }
 
+export async function getBoardSprints(boardId) {
+  const res = await fetch(`${BASE}/api/jira/board/${boardId}/sprints`)
+  return res.json()
+}
+
+export async function seedBoards(boards) {
+  const res = await fetch(`${BASE}/api/data-sources/seed-boards`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ boards }),
+  })
+  if (res.status === 401) throw new Error('Admin login required')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Failed to seed boards')
+  }
+  return res.json()
+}
+
 // ── Test Plans & Cases ──────────────────────────────────────────
 
 export async function generateTestPlan(data) {

@@ -324,6 +324,8 @@ def sync_all_sources(env_key: str) -> list:
 def _sync_jira(source_id: str, config: dict) -> dict:
     """Fetch Jira issues and store as items.
 
+    Supports: project_key, board_id, sprint filter, date range, epic keys, JQL.
+
     Auth priority:
     1. Data source config (username + api_token)
     2. Bug Settings (jira_config table)
@@ -344,6 +346,10 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     client = JiraClient(jira_cfg)
 
     project_key = config.get("project_key") or jira_cfg.get("project_key", "QUAL")
+    board_id = config.get("board_id", "")
+    sprint_filter = config.get("sprint_filter", "")  # "active", sprint name, or sprint ID
+    date_from = config.get("date_from", "")
+    date_to = config.get("date_to", "")
     epic_keys = config.get("epic_keys", [])
     jql_filter = config.get("jql_filter", "")
     include_subtasks = config.get("include_subtasks", True)
@@ -351,16 +357,39 @@ def _sync_jira(source_id: str, config: dict) -> dict:
     # Build JQL
     if jql_filter:
         jql = jql_filter
-    elif epic_keys:
-        epic_list = ",".join(f'"{k}"' for k in epic_keys)
-        jql = f"project = {project_key} AND 'Epic Link' IN ({epic_list})"
-        if not include_subtasks:
-            jql += " AND issuetype NOT IN (Sub-task)"
     else:
-        jql = f"project = {project_key} AND issuetype IN (Epic, Story, Task, Bug) ORDER BY created DESC"
+        clauses = [f"project = {project_key}"]
 
-    # Fetch issues via JiraClient
-    issues = client.search_tickets(jql, max_results=200)
+        # Sprint filter (requires board_id to resolve sprint names)
+        if sprint_filter and board_id:
+            sprint_clause = _resolve_sprint_clause(client, board_id, sprint_filter)
+            if sprint_clause:
+                clauses.append(sprint_clause)
+
+        # Epic filter
+        if epic_keys:
+            epic_list = ",".join(f'"{k}"' for k in epic_keys)
+            clauses.append(f"'Epic Link' IN ({epic_list})")
+
+        # Date range filter
+        if date_from:
+            clauses.append(f'created >= "{date_from}"')
+        if date_to:
+            clauses.append(f'created <= "{date_to}"')
+
+        # Subtask filter
+        if not include_subtasks:
+            clauses.append("issuetype NOT IN (Sub-task)")
+        else:
+            clauses.append("issuetype IN (Epic, Story, Task, Bug, Sub-task)")
+
+        jql = " AND ".join(clauses) + " ORDER BY created DESC"
+
+    logger.info(f"Syncing Jira source {source_id}: JQL = {jql}")
+
+    # Fetch issues with full fields needed for data source items
+    issue_fields = ["summary", "status", "assignee", "labels", "description", "issuetype", "priority", "sprint"]
+    issues = client.search_tickets(jql, max_results=500, fields=issue_fields)
 
     current_ids = set()
     with _get_conn() as conn:
@@ -371,6 +400,9 @@ def _sync_jira(source_id: str, config: dict) -> dict:
             status = fields.get("status", {}).get("name", "")
             issue_type = fields.get("issuetype", {}).get("name", "").lower()
             labels = fields.get("labels", [])
+            priority = fields.get("priority", {}).get("name", "") if fields.get("priority") else ""
+            sprint_info = fields.get("sprint")
+            sprint_name = sprint_info.get("name", "") if isinstance(sprint_info, dict) else ""
             description_text = _extract_jira_description(fields.get("description"))
 
             content = f"Status: {status}\n{description_text}" if description_text else f"Status: {status}"
@@ -380,7 +412,10 @@ def _sync_jira(source_id: str, config: dict) -> dict:
             _upsert_item(
                 conn, source_id, external_id=key, title=f"[{key}] {summary}",
                 content=content, item_type=item_type, external_url=external_url,
-                metadata={"status": status, "labels": labels, "issue_type": issue_type},
+                metadata={
+                    "status": status, "labels": labels, "issue_type": issue_type,
+                    "priority": priority, "sprint": sprint_name,
+                },
             )
             current_ids.add(key)
 
@@ -390,6 +425,29 @@ def _sync_jira(source_id: str, config: dict) -> dict:
         ).fetchone()["cnt"]
 
     return {"items_count": count, "fetched": len(issues)}
+
+
+def _resolve_sprint_clause(client, board_id: str, sprint_filter: str) -> str:
+    """Resolve sprint filter to JQL clause.
+
+    sprint_filter can be:
+    - "active" → openSprints()
+    - "closed" → closedSprints()
+    - sprint name → sprint = "name"
+    - sprint ID (numeric) → sprint = ID
+    """
+    sf = sprint_filter.strip().lower()
+    if sf == "active":
+        return "sprint IN openSprints()"
+    if sf == "closed":
+        return "sprint IN closedSprints()"
+    if sf == "future":
+        return "sprint IN futureSprints()"
+    # Numeric = sprint ID
+    if sprint_filter.strip().isdigit():
+        return f"sprint = {sprint_filter.strip()}"
+    # Sprint name — quote it
+    return f'sprint = "{sprint_filter.strip()}"'
 
 
 def _extract_jira_description(desc) -> str:

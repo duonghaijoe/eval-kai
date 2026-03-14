@@ -1,11 +1,22 @@
 import { useState, useEffect } from 'react'
-import { Database, Plus, RefreshCw, Trash2, Edit3, ChevronRight, ChevronDown, AlertCircle, ExternalLink, ArrowLeft } from 'lucide-react'
+import { Database, Plus, RefreshCw, Trash2, Edit3, ChevronRight, ChevronDown, AlertCircle, ExternalLink, ArrowLeft, Layers } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAdmin } from '../AdminContext'
 import {
   listDataSources, createDataSource, updateDataSource, deleteDataSource,
   syncDataSource, syncAllDataSources, getDataSourceItems, getConfig,
+  getBoardSprints, seedBoards,
 } from '../api'
+
+const TEAM_BOARDS = [
+  { name: 'Admin Team', project_key: 'TO', board_id: '362' },
+  { name: 'Core Team', project_key: 'TO', board_id: '387' },
+  { name: 'AI Platform Team', project_key: 'TO', board_id: '965' },
+  { name: 'RA Team', project_key: 'TO', board_id: '390' },
+  { name: 'CE Team', project_key: 'CE', board_id: '397' },
+  { name: 'MT Team', project_key: 'TO', board_id: '399' },
+  { name: 'Test Cloud', project_key: 'KTC', board_id: '103' },
+]
 
 const SOURCE_TYPES = [
   { value: 'jira', label: 'Jira', desc: 'Import issues from Jira project/epic', shared: true },
@@ -48,6 +59,7 @@ export default function DataSources() {
   const [syncing, setSyncing] = useState({})
   const [syncingAll, setSyncingAll] = useState(false)
   const [confirmDel, setConfirmDel] = useState(null)
+  const [seeding, setSeeding] = useState(false)
 
   useEffect(() => {
     getConfig().then(d => setEnvKey(d.active_env || 'production')).catch(() => {})
@@ -79,6 +91,15 @@ export default function DataSources() {
     try { await deleteDataSource(id); setConfirmDel(null); await load() } catch { /* ignore */ }
   }
 
+  const handleSeedBoards = async () => {
+    setSeeding(true)
+    try {
+      await seedBoards(TEAM_BOARDS)
+      await load()
+    } catch { /* ignore */ }
+    setSeeding(false)
+  }
+
   const handleToggleEnabled = async (id, currentlyEnabled) => {
     try { await updateDataSource(id, { enabled: !currentlyEnabled }); await load() } catch { /* ignore */ }
   }
@@ -107,6 +128,11 @@ export default function DataSources() {
           {sources.length > 0 && (
             <button onClick={handleSyncAll} disabled={syncingAll} style={{ fontSize: '0.73rem' }}>
               {syncingAll ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Syncing All...</> : <><RefreshCw size={12} /> Sync All</>}
+            </button>
+          )}
+          {isAdmin && sources.filter(s => s.config?.board_id).length === 0 && (
+            <button onClick={handleSeedBoards} disabled={seeding} style={{ fontSize: '0.73rem' }}>
+              {seeding ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Seeding...</> : <><Layers size={12} /> Add Team Boards</>}
             </button>
           )}
           {isAdmin && (
@@ -143,8 +169,12 @@ export default function DataSources() {
                       {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       <div style={{ opacity: src.enabled ? 1 : 0.5 }}>
                         <div style={{ fontWeight: 600, fontSize: '0.8rem' }}>{src.name}</div>
-                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                          {typeInfo.label || src.source_type} — {src.item_count || 0} items
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
+                          {typeInfo.label || src.source_type}
+                          {src.config?.project_key && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#f5f5f5', fontWeight: 500 }}>{src.config.project_key}</span>}
+                          {src.config?.board_id && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#fffbeb', color: 'var(--yellow)', fontWeight: 500 }}>Board {src.config.board_id}</span>}
+                          {src.config?.sprint_filter && <span style={{ fontSize: '0.62rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#ecfdf5', color: 'var(--green)', fontWeight: 500 }}>{src.config.sprint_filter}</span>}
+                          — {src.item_count || 0} items
                           {src.shared && <span style={{ fontSize: '0.58rem', padding: '0.1em 0.35em', borderRadius: '8px', background: '#f0f0ff', color: 'var(--accent)', fontWeight: 500 }}>Shared</span>}
                         </div>
                       </div>
@@ -274,6 +304,8 @@ function DataSourceModal({ source, envKey, onClose, onSaved }) {
   const [enabled, setEnabled] = useState(source?.enabled !== false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const [sprints, setSprints] = useState([])
+  const [loadingSprints, setLoadingSprints] = useState(false)
 
   const handleSave = async () => {
     if (!name.trim()) { setError('Name is required'); return }
@@ -293,6 +325,31 @@ function DataSourceModal({ source, envKey, onClose, onSaved }) {
   }
 
   const updateCfg = (key, val) => setConfig(c => ({ ...c, [key]: val }))
+
+  const parseBoardUrl = (url) => {
+    // Parse: https://katalon.atlassian.net/jira/software/c/projects/TO/boards/362
+    const m = url.match(/projects\/([A-Z]+)\/boards\/(\d+)/)
+    if (m) {
+      setConfig(c => ({ ...c, project_key: m[1], board_id: m[2] }))
+      if (!name) setName(`${m[1]} Board ${m[2]}`)
+      loadSprints(m[2])
+    }
+  }
+
+  const loadSprints = async (boardId) => {
+    if (!boardId) return
+    setLoadingSprints(true)
+    try {
+      const data = await getBoardSprints(boardId)
+      setSprints(data.sprints || [])
+    } catch { setSprints([]) }
+    setLoadingSprints(false)
+  }
+
+  // Load sprints when board_id is set
+  useEffect(() => {
+    if (config.board_id && sourceType === 'jira') loadSprints(config.board_id)
+  }, []) // eslint-disable-line
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
@@ -328,16 +385,99 @@ function DataSourceModal({ source, envKey, onClose, onSaved }) {
         {sourceType === 'jira' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             <div>
-              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Project Key</label>
-              <input value={config.project_key || ''} onChange={e => updateCfg('project_key', e.target.value)} placeholder="QUAL" style={{ width: '100%' }} />
+              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Board URL (paste Jira board link to auto-fill)</label>
+              <input
+                placeholder="https://katalon.atlassian.net/jira/software/c/projects/TO/boards/362"
+                style={{ width: '100%', fontSize: '0.72rem' }}
+                onChange={e => parseBoardUrl(e.target.value)}
+              />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+              <div>
+                <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Project Key</label>
+                <input value={config.project_key || ''} onChange={e => updateCfg('project_key', e.target.value)} placeholder="TO" style={{ width: '100%' }} />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Board ID</label>
+                <input value={config.board_id || ''} onChange={e => { updateCfg('board_id', e.target.value); if (e.target.value.match(/^\d+$/)) loadSprints(e.target.value) }} placeholder="362" style={{ width: '100%' }} />
+              </div>
             </div>
             <div>
-              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Epic Keys (comma-separated)</label>
+              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Sprint Filter</label>
+              <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.3rem', flexWrap: 'wrap' }}>
+                {['active', 'closed', 'future'].map(sf => (
+                  <button key={sf} onClick={() => updateCfg('sprint_filter', sf)}
+                    style={{
+                      fontSize: '0.68rem', padding: '0.2em 0.6em', borderRadius: '10px', cursor: 'pointer',
+                      border: config.sprint_filter === sf ? '1.5px solid var(--accent)' : '1px solid var(--border)',
+                      background: config.sprint_filter === sf ? '#f0f0ff' : 'transparent',
+                      color: config.sprint_filter === sf ? 'var(--accent)' : 'var(--text-secondary)',
+                      fontWeight: config.sprint_filter === sf ? 600 : 400,
+                    }}>
+                    {sf.charAt(0).toUpperCase() + sf.slice(1)}
+                  </button>
+                ))}
+                {config.sprint_filter && !['active', 'closed', 'future'].includes(config.sprint_filter) && (
+                  <span style={{ fontSize: '0.68rem', color: 'var(--accent)', padding: '0.2em 0.6em', border: '1.5px solid var(--accent)', borderRadius: '10px', background: '#f0f0ff', fontWeight: 600 }}>
+                    {config.sprint_filter}
+                  </span>
+                )}
+                {config.sprint_filter && (
+                  <button onClick={() => updateCfg('sprint_filter', '')}
+                    style={{ fontSize: '0.65rem', padding: '0.2em 0.5em', cursor: 'pointer', color: 'var(--text-muted)', border: 'none', background: 'none' }}>
+                    Clear
+                  </button>
+                )}
+              </div>
+              {config.board_id && (
+                <div style={{ maxHeight: 120, overflow: 'auto', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.2rem' }}>
+                  {loadingSprints ? (
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', padding: '0.3rem' }}><span className="spinner" style={{ width: 10, height: 10 }} /> Loading sprints...</div>
+                  ) : sprints.length === 0 ? (
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', padding: '0.3rem' }}>No sprints found. Check board ID or credentials.</div>
+                  ) : (
+                    sprints.slice().reverse().map(sp => (
+                      <div key={sp.id} onClick={() => updateCfg('sprint_filter', sp.name)}
+                        style={{
+                          fontSize: '0.68rem', padding: '0.25rem 0.4rem', cursor: 'pointer', borderRadius: '4px',
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          background: config.sprint_filter === sp.name ? '#f0f0ff' : 'transparent',
+                        }}>
+                        <span style={{ fontWeight: config.sprint_filter === sp.name ? 600 : 400 }}>{sp.name}</span>
+                        <span style={{
+                          fontSize: '0.6rem', padding: '0.1em 0.4em', borderRadius: '8px',
+                          background: sp.state === 'active' ? '#ecfdf5' : sp.state === 'closed' ? '#f5f5f5' : '#fffbeb',
+                          color: sp.state === 'active' ? 'var(--green)' : sp.state === 'closed' ? 'var(--text-muted)' : 'var(--yellow)',
+                        }}>{sp.state}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                Use "Active" for current sprint, or click a specific sprint name. Leave empty for all issues.
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Date Range (optional)</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+                <div>
+                  <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>From</label>
+                  <input type="date" value={config.date_from || ''} onChange={e => updateCfg('date_from', e.target.value)} style={{ width: '100%', fontSize: '0.72rem' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>To</label>
+                  <input type="date" value={config.date_to || ''} onChange={e => updateCfg('date_to', e.target.value)} style={{ width: '100%', fontSize: '0.72rem' }} />
+                </div>
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>Epic Keys (comma-separated, optional)</label>
               <input value={(config.epic_keys || []).join(', ')} onChange={e => updateCfg('epic_keys', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} placeholder="QUAL-179, QUAL-180" style={{ width: '100%' }} />
             </div>
             <div>
-              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>JQL Filter (overrides above)</label>
-              <input value={config.jql_filter || ''} onChange={e => updateCfg('jql_filter', e.target.value)} placeholder="project = QUAL AND type = Story" style={{ width: '100%' }} />
+              <label style={{ fontSize: '0.73rem', fontWeight: 500 }}>JQL Override (overrides all above filters)</label>
+              <input value={config.jql_filter || ''} onChange={e => updateCfg('jql_filter', e.target.value)} placeholder="project = TO AND sprint in openSprints()" style={{ width: '100%' }} />
             </div>
             <label style={{ fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
               <input type="checkbox" checked={config.include_subtasks !== false} onChange={e => updateCfg('include_subtasks', e.target.checked)} />

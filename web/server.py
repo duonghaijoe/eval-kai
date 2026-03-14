@@ -1752,6 +1752,41 @@ def api_get_data_source_items(source_id: str):
     return {"items": items, "source": source}
 
 
+@app.get("/api/jira/board/{board_id}/sprints")
+def api_get_board_sprints(board_id: str):
+    """Get sprints for a Jira board."""
+    from jira_integration import get_jira_config_full, JiraClient
+    jira_cfg = get_jira_config_full()
+    client = JiraClient(jira_cfg)
+    sprints = client.get_board_sprints(board_id)
+    return {"sprints": sprints, "board_id": board_id}
+
+
+class SeedBoardsRequest(BaseModel):
+    boards: list  # [{name, project_key, board_id}]
+
+
+@app.post("/api/data-sources/seed-boards")
+def api_seed_boards(req: SeedBoardsRequest, _user: str = Depends(require_admin)):
+    """Seed multiple Jira board data sources at once."""
+    created = []
+    for board in req.boards:
+        name = board.get("name", "")
+        project_key = board.get("project_key", "")
+        board_id = board.get("board_id", "")
+        if not name or not project_key or not board_id:
+            continue
+        config = {
+            "project_key": project_key,
+            "board_id": str(board_id),
+            "sprint_filter": "active",
+            "include_subtasks": True,
+        }
+        source = create_data_source("_shared", "jira", name, config)
+        created.append(source)
+    return {"created": created, "count": len(created)}
+
+
 # ── Test Plans & Cases ───────────────────────────────────────────
 
 class GenerateTestPlanRequest(BaseModel):

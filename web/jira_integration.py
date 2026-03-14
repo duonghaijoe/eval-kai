@@ -207,12 +207,14 @@ class JiraClient:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def search_tickets(self, jql: str, max_results: int = 20) -> list:
+    def search_tickets(self, jql: str, max_results: int = 20, fields: list = None) -> list:
         """Search Jira tickets via JQL (uses POST to avoid 410 on GET)."""
+        if fields is None:
+            fields = ["summary", "status", "assignee", "labels"]
         try:
             resp = self.client.post(
                 f"{self.base_url}/rest/api/3/search/jql",
-                json={"jql": jql, "maxResults": max_results, "fields": ["summary", "status", "assignee", "labels"]},
+                json={"jql": jql, "maxResults": max_results, "fields": fields},
                 auth=self._auth(),
                 headers=self._headers(),
             )
@@ -221,6 +223,44 @@ class JiraClient:
         except Exception as e:
             logger.warning(f"Jira search failed: {e}")
             return []
+
+    def get_board_sprints(self, board_id: int | str) -> list:
+        """Get sprints for a Jira board (Agile API)."""
+        try:
+            sprints = []
+            start_at = 0
+            while True:
+                resp = self.client.get(
+                    f"{self.base_url}/rest/agile/1.0/board/{board_id}/sprint",
+                    params={"startAt": start_at, "maxResults": 50},
+                    auth=self._auth(),
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                batch = data.get("values", [])
+                sprints.extend(batch)
+                if data.get("isLast", True) or not batch:
+                    break
+                start_at += len(batch)
+            return sprints
+        except Exception as e:
+            logger.warning(f"Failed to get sprints for board {board_id}: {e}")
+            return []
+
+    def get_board_config(self, board_id: int | str) -> dict:
+        """Get board configuration (includes project info)."""
+        try:
+            resp = self.client.get(
+                f"{self.base_url}/rest/agile/1.0/board/{board_id}/configuration",
+                auth=self._auth(),
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to get board config for {board_id}: {e}")
+            return {}
 
     def find_duplicates(self, goal: str, error: str = None) -> list:
         """Search for potential duplicate tickets."""
