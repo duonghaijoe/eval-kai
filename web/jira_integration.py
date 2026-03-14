@@ -208,22 +208,40 @@ class JiraClient:
             return {"ok": False, "error": str(e)}
 
     def search_tickets(self, jql: str, max_results: int = 20, fields: list = None) -> list:
-        """Search Jira tickets via JQL (uses POST to avoid 410 on GET).
+        """Search Jira tickets via JQL with automatic pagination.
 
+        Jira Cloud caps at 100 per request. This method paginates to fetch
+        up to max_results total issues.
         Raises on HTTP errors so callers can handle failures explicitly.
         """
         if fields is None:
             fields = ["summary", "status", "assignee", "labels"]
-        resp = self.client.post(
-            f"{self.base_url}/rest/api/3/search/jql",
-            json={"jql": jql, "maxResults": max_results, "fields": fields},
-            auth=self._auth(),
-            headers=self._headers(),
-        )
-        if resp.status_code != 200:
-            error_text = resp.text[:300]
-            raise ValueError(f"Jira search failed (HTTP {resp.status_code}): {error_text}")
-        return resp.json().get("issues", [])
+
+        all_issues = []
+        start_at = 0
+        page_size = min(max_results, 100)  # Jira caps at 100
+
+        while len(all_issues) < max_results:
+            resp = self.client.post(
+                f"{self.base_url}/rest/api/3/search/jql",
+                json={"jql": jql, "maxResults": page_size, "startAt": start_at, "fields": fields},
+                auth=self._auth(),
+                headers=self._headers(),
+            )
+            if resp.status_code != 200:
+                error_text = resp.text[:300]
+                raise ValueError(f"Jira search failed (HTTP {resp.status_code}): {error_text}")
+
+            data = resp.json()
+            batch = data.get("issues", [])
+            all_issues.extend(batch)
+            total = data.get("total", 0)
+
+            start_at += len(batch)
+            if not batch or start_at >= total:
+                break
+
+        return all_issues[:max_results]
 
     def search_tickets_safe(self, jql: str, max_results: int = 20, fields: list = None) -> list:
         """Like search_tickets but returns [] on error (for non-critical callers)."""
